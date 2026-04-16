@@ -1,0 +1,94 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'messenger_allInOne*.py'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller ttkbootstrap pyautogui pyperclip pygetwindow pillow pytesseract pywin32 openpyxl requests certifi
+
+      - name: Get version
+        id: get_version
+        shell: python
+        run: |
+          import re, os
+          with open("messenger_allInOne_v1.60.py", encoding="utf-8") as f:
+              content = f.read()
+          match = re.search(r'^APP_VERSION\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
+          version = match.group(1) if match else "0.0.0"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"version={version}\n")
+
+      - name: Build exe
+        run: pyinstaller messenger_v160.spec --clean
+
+      - name: Upload exe & update version.json
+        shell: python
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          import os, base64, json
+          import urllib.request
+
+          token   = os.environ["GITHUB_TOKEN"]
+          version = os.environ["VERSION"]
+          repo    = "lcm67088-tech/Program"
+          headers = {
+              "Authorization": f"token {token}",
+              "Accept": "application/vnd.github.v3+json",
+              "Content-Type": "application/json",
+              "User-Agent": "GitHub-Actions"
+          }
+          api = f"https://api.github.com/repos/{repo}/contents"
+
+          def get_sha(path):
+              try:
+                  req = urllib.request.Request(f"{api}/{path}", headers=headers)
+                  with urllib.request.urlopen(req) as r:
+                      return json.loads(r.read())["sha"]
+              except:
+                  return None
+
+          def put_file(path, content_bytes, message):
+              sha = get_sha(path)
+              body = {"message": message, "content": base64.b64encode(content_bytes).decode()}
+              if sha:
+                  body["sha"] = sha
+              req = urllib.request.Request(
+                  f"{api}/{path}",
+                  data=json.dumps(body).encode(),
+                  headers=headers,
+                  method="PUT"
+              )
+              with urllib.request.urlopen(req) as r:
+                  print(f"{path} 완료: {r.status}")
+
+          # exe 업로드
+          with open(r"dist\메신저올인원\메신저올인원.exe", "rb") as f:
+              put_file("%EB%A9%94%EC%8B%A0%EC%A0%80%EC%98%AC%EC%9D%B8%EC%9B%90.exe", f.read(), f"build: v{version} exe")
+
+          # version.json 업데이트
+          version_data = json.dumps({
+              "version": version,
+              "download_url": f"https://github.com/{repo}/raw/main/%EB%A9%94%EC%8B%A0%EC%A0%80%EC%98%AC%EC%9D%B8%EC%9B%90.exe",
+              "md5": "",
+              "updated_at": "${{ github.event.head_commit.timestamp }}"
+          }, ensure_ascii=False, indent=2).encode()
+          put_file("version.json", version_data, f"release: v{version}")
