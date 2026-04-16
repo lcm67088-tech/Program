@@ -191,7 +191,11 @@ class DevLauncherApp:
     def _launch(self):
         try:
             python_path = get_python_path()
-            subprocess.Popen([python_path, PY_SAVE_PATH], cwd=BASE_DIR)
+            subprocess.Popen(
+                f'"{python_path}" "{PY_SAVE_PATH}"',
+                cwd=BASE_DIR,
+                shell=True
+            )
         except Exception as e:
             messagebox.showerror("실행 오류", f"실행할 수 없습니다.\n{e}")
         finally:
