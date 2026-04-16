@@ -1,14 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 메신저 올인원 - 런처
-GitHub에서 최신 버전을 확인하고 자동으로 다운로드 후 실행합니다.
+GitHub에서 최신 버전 exe를 확인하고 자동으로 다운로드 후 실행합니다.
 """
 
 import os
 import sys
 import json
-import zipfile
-import shutil
 import hashlib
 import subprocess
 import threading
@@ -23,9 +21,8 @@ GITHUB_REPO      = "Program"
 VERSION_URL      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main/version.json"
 LAUNCHER_VERSION = "1.0.0"
 
-# 실행 파일 저장 경로 (런처와 같은 폴더)
 BASE_DIR     = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
-APP_DIR      = os.path.join(BASE_DIR, "app")           # 압축 해제 폴더
+APP_EXE_PATH = os.path.join(BASE_DIR, "메신저올인원.exe")
 VERSION_FILE = os.path.join(BASE_DIR, "local_version.json")
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -40,19 +37,9 @@ def get_local_version() -> str:
     return "0.0.0"
 
 
-def save_local_version(version: str, exe_path: str):
+def save_local_version(version: str):
     with open(VERSION_FILE, "w", encoding="utf-8") as f:
-        json.dump({"version": version, "exe_path": exe_path}, f, ensure_ascii=False)
-
-
-def get_local_exe_path() -> str:
-    try:
-        if os.path.exists(VERSION_FILE):
-            with open(VERSION_FILE, "r", encoding="utf-8") as f:
-                return json.load(f).get("exe_path", "")
-    except Exception:
-        pass
-    return ""
+        json.dump({"version": version}, f, ensure_ascii=False)
 
 
 def fetch_remote_version() -> dict:
@@ -82,25 +69,6 @@ def download_file(url: str, dest: str, progress_callback=None):
     if os.path.exists(dest):
         os.remove(dest)
     os.rename(tmp_path, dest)
-
-
-def find_exe_in_dir(directory: str) -> str:
-    """디렉토리에서 .exe 파일 찾기 (재귀)"""
-    for root, dirs, files in os.walk(directory):
-        for f in files:
-            if f.endswith(".exe"):
-                return os.path.join(root, f)
-    return ""
-
-
-def extract_zip(zip_path: str, extract_to: str) -> str:
-    """zip 압축 해제 후 exe 경로 반환"""
-    if os.path.exists(extract_to):
-        shutil.rmtree(extract_to)
-    os.makedirs(extract_to, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(extract_to)
-    return find_exe_in_dir(extract_to)
 
 
 class LauncherApp:
@@ -187,7 +155,6 @@ class LauncherApp:
 
     def _check_and_launch(self):
         local_ver = get_local_version()
-        local_exe = get_local_exe_path()
 
         try:
             self.root.after(0, self.set_status, "GitHub에서 버전 확인 중...")
@@ -199,14 +166,11 @@ class LauncherApp:
 
             need_update = (
                 local_ver != remote_ver or
-                not local_exe or
-                not os.path.exists(local_exe)
+                not os.path.exists(APP_EXE_PATH)
             )
 
             if need_update:
                 self.root.after(0, self.set_status, f"v{remote_ver} 다운로드 중...")
-
-                zip_path = os.path.join(BASE_DIR, "app_download.zip")
 
                 def on_progress(downloaded, total):
                     if total > 0:
@@ -217,46 +181,27 @@ class LauncherApp:
                         self.root.after(0, self.set_status,
                             f"다운로드 중... {mb_d:.1f} / {mb_t:.1f} MB")
 
-                download_file(download_url, zip_path, on_progress)
-
-                self.root.after(0, self.set_status, "압축 해제 중...")
-                self.root.after(0, self.set_progress_indeterminate)
-
-                local_exe = extract_zip(zip_path, APP_DIR)
-
-                if not local_exe:
-                    self.root.after(0, messagebox.showerror,
-                        "오류", "zip 안에서 .exe 파일을 찾을 수 없습니다.")
-                    self.root.after(0, self.root.destroy)
-                    return
-
-                # 임시 zip 삭제
-                os.remove(zip_path)
-
-                save_local_version(remote_ver, local_exe)
+                download_file(download_url, APP_EXE_PATH, on_progress)
+                save_local_version(remote_ver)
                 self.root.after(0, self.set_status, f"v{remote_ver} 완료! 실행 중...")
             else:
                 self.root.after(0, self.set_status, f"최신 버전 (v{local_ver}). 실행 중...")
 
         except Exception as e:
-            # 네트워크 오류 시 로컬 버전으로 실행
-            if local_exe and os.path.exists(local_exe):
+            if os.path.exists(APP_EXE_PATH):
                 self.root.after(0, self.set_status,
                     f"네트워크 오류 - 로컬 버전(v{local_ver}) 실행 중...")
             else:
                 self.root.after(0, messagebox.showerror,
-                    "오류",
-                    f"네트워크 오류이고 로컬 파일도 없습니다.\n\n{e}")
+                    "오류", f"네트워크 오류이고 로컬 파일도 없습니다.\n\n{e}")
                 self.root.after(0, self.root.destroy)
                 return
 
-        self._exe_to_launch = local_exe
         self.root.after(1000, self._launch_app)
 
     def _launch_app(self):
         try:
-            exe = self._exe_to_launch
-            subprocess.Popen([exe], cwd=os.path.dirname(exe))
+            subprocess.Popen([APP_EXE_PATH], cwd=BASE_DIR)
         except Exception as e:
             messagebox.showerror("실행 오류", f"프로그램을 실행할 수 없습니다.\n{e}")
         finally:
