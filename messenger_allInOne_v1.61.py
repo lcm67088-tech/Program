@@ -5156,7 +5156,8 @@ class JobsTab(tk.Frame):
         # ── v1.58 CHANGE-X8: 스레드 기반 스케줄러 즉시 시작 (1초 후) ──────────
         self._scheduler_after_id = None          # after-callback ID (cancel 용)
         self._50sec_guard: dict   = {}             # v1.60 BENCH-3: 50초 가드 맵
-        self.after(3000, lambda: _check_update_on_start(self))  # v1.60 자동업데이터
+        # [NEW-BUG-01 fix] self → self.app 전달 (_check_update_on_start 인자는 App 인스턴스)
+        self.after(3000, lambda: _check_update_on_start(self.app))  # v1.60 자동업데이터
         self._scheduler_running  = False         # 스레드 중복 방지 플래그
         self.after(1_000, self._start_scheduler)  # 1초 후 첫 스케줄러 시작
         # ── v1.57 CHANGE-W8: _fired_set 초기화 ──────────────────────────────────────
@@ -8229,6 +8230,13 @@ def _jobs_on_job_done(self, name: str,
                 save_json(Path(_fpath_done), _save_dict)
             break
 
+    # [CRIT-02 보완] interval 모드 fired_set 키 제거
+    # → last_run 이 갱신된 이후이므로 다음 interval 사이클에 재실행 허용
+    _today_done = _now_done.strftime("%Y-%m-%d")
+    _iv_done_key = f"{abs(hash(name))}|{_today_done}|interval"
+    if hasattr(self, "_fired_set"):
+        self._fired_set.discard(_iv_done_key)
+
     # 통계 업데이트
     if hasattr(self.app, "_stats_tab"):
         self.after(0,
@@ -8725,7 +8733,10 @@ class TelethonEngine:
 
     # ── 클라이언트 생성/연결 ───────────────────────────────
     def _get_or_create_loop(self, phone: str):
-        """계정별 asyncio 루프 (없으면 신규 생성)"""
+        """계정별 asyncio 루프 (없으면 신규 생성)
+        주의: 이 메서드는 self._lock 보유 중에 호출될 수 있으므로
+        lock 을 획득하지 않음 (deadlock 방지). 호출자가 lock 관리 책임.
+        """
         import asyncio
         if phone not in self._loops:
             loop = asyncio.new_event_loop()
@@ -8740,25 +8751,28 @@ class TelethonEngine:
         api_id  = int(acct.get("api_id", 0))
         api_hash= str(acct.get("api_hash", ""))
         session = str(TG_SESSION_DIR / f"session_{phone}")
-        loop    = self._get_or_create_loop(phone)
 
-        if phone not in self._clients:
-            # [BUG-07 fix] Telethon 1.25+에서 loop= 파라미터 제거됨 → 인자 삭제
-            # loop는 _run_in_loop / asyncio.run_coroutine_threadsafe 에서 별도 전달
-            client = TelegramClient(session, api_id, api_hash)
-            self._clients[phone] = client
-        else:
-            # [WARN-04 fix] 기존 클라이언트가 연결 해제 상태면 새로 생성
-            # disconnect()는 Telethon에서 코루틴이므로 동기 호출하면 실제 해제 안됨.
-            # is_connected() == False 이면 해당 객체는 재사용 불가 → 즉시 교체.
-            existing = self._clients[phone]
-            try:
-                connected = existing.is_connected()
-            except Exception:
-                connected = False
-            if not connected:
+        # [NEW-BUG-04 fix] _loops/_clients dict 접근 시 lock 으로 race condition 방지
+        # _get_or_create_loop 는 lock 없이 작동하므로 lock 블록 내부에서 직접 호출
+        with self._lock:
+            loop = self._get_or_create_loop(phone)
+            if phone not in self._clients:
+                # [BUG-07 fix] Telethon 1.25+에서 loop= 파라미터 제거됨 → 인자 삭제
+                # loop는 _run_in_loop / asyncio.run_coroutine_threadsafe 에서 별도 전달
                 client = TelegramClient(session, api_id, api_hash)
                 self._clients[phone] = client
+            else:
+                # [WARN-04 fix] 기존 클라이언트가 연결 해제 상태면 새로 생성
+                # disconnect()는 Telethon에서 코루틴이므로 동기 호출하면 실제 해제 안됨.
+                # is_connected() == False 이면 해당 객체는 재사용 불가 → 즉시 교체.
+                existing = self._clients[phone]
+                try:
+                    connected = existing.is_connected()
+                except Exception:
+                    connected = False
+                if not connected:
+                    client = TelegramClient(session, api_id, api_hash)
+                    self._clients[phone] = client
         return self._clients[phone], loop
 
     def _run_in_loop(self, loop, coro):
