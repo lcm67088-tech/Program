@@ -7126,10 +7126,13 @@ class WorkflowExecutor:
                 ok = eng.join_group(acct, link, self._stop)
                 if ok: self._succ += 1
                 else:  self._fail += 1
+                # [CRIT-04 fix] 계정 경계에서 sw_dly 또는 tg_min~max 중 하나만 적용
+                # 이전: sw_dly sleep 후 이어서 tg_min~max sleep → 이중 sleep 버그
                 if idx % n_accts == n_accts - 1:
                     if self._sleep_or_stop(sw_dly): break
-                if self._sleep_or_stop(
-                        random.uniform(tg_min, tg_max)): break
+                else:
+                    if self._sleep_or_stop(
+                            random.uniform(tg_min, tg_max)): break
 
         elif mode == "split":
             # 링크를 계정 수로 균등 분배
@@ -7395,10 +7398,13 @@ class WorkflowExecutor:
                 ok = eng.send_message(acct, peer, msg, self._stop)
                 if ok: self._succ += 1
                 else:  self._fail += 1
+                # [CRIT-04 fix] 계정 경계에서 sw_dly 또는 tg_min~max 중 하나만 적용
+                # 이전: sw_dly sleep 후 이어서 tg_min~max sleep → 이중 sleep 버그
                 if idx % n_accts == n_accts - 1:
                     if self._sleep_or_stop(sw_dly): break
-                if self._sleep_or_stop(
-                        random.uniform(tg_min, tg_max)): break
+                else:
+                    if self._sleep_or_stop(
+                            random.uniform(tg_min, tg_max)): break
 
         elif mode == "split":
             chunk = max(1, (total + n_accts - 1) // n_accts)
@@ -8349,10 +8355,13 @@ def _jobs_start_scheduler(self) -> None:
             try:
                 _jobs_scheduler_tick(self)
             except Exception as _e:
+                # [CRIT-01 fix] daemon 스레드 → UI 직접 호출 금지 → after() 래핑
                 try:
                     if hasattr(self.app, "_log_tab"):
-                        self.app._log_tab.append(
-                            f"[스케줄러 오류] {_e}", "ERROR", "스케줄러")
+                        _msg = f"[스케줄러 오류] {_e}"
+                        self.app.after(
+                            0, lambda m=_msg:
+                            self.app._log_tab.append(m, "ERROR", "스케줄러"))
                 except Exception:
                     pass
             stop_flag.wait(30)   # 30초 대기 (UI 영향 없음)
@@ -8483,6 +8492,12 @@ def _jobs_scheduler_tick(self):
                         fired = True   # 파싱 실패 → 재실행 허용
 
                 if fired:
+                    # [CRIT-02 fix] interval 모드도 _fired_set 으로 중복 트리거 방지
+                    # last_run 이 업데이트되기 전 30초 뒤 tick 이 다시 돌 때 재실행 차단
+                    _iv_key = f"{abs(hash(name))}|{today_str}|interval"
+                    if _iv_key in self._fired_set:
+                        continue
+                    self._fired_set.add(_iv_key)
                     sched_label = j.get("schedule_label", f"매 {interval}시간")
                     if hasattr(self.app, "_log_tab"):
                         self.app.after(0, lambda m=f"[스케줄] [{name}] 자동 실행 — {sched_label}":
@@ -8516,14 +8531,16 @@ def _jobs_trigger_with_wait(self, job: dict):
 
 
 def _jobs_log_scheduler_restore(self, job_names: list):
-    """v1.60 BENCH-2: 앱 시작 시 스케줄 복원 로그"""
+    """v1.60 BENCH-2: 앱 시작 시 스케줄 복원 로그
+    [CRIT-05 fix] 백그라운드 스레드에서 호출될 수 있으므로 after() 로 UI 스레드 안전 보장
+    """
     if not job_names:
         return
     if hasattr(self.app, "_log_tab"):
         for nm in job_names:
-            self.app._log_tab.append(
-                f"[스케줄 복원] [{nm}] 스케줄 재등록",
-                "INFO", "스케줄러")
+            self.app.after(
+                0, lambda m=f"[스케줄 복원] [{nm}] 스케줄 재등록":
+                self.app._log_tab.append(m, "INFO", "스케줄러"))
 
 
 def _jobs_restore_scheduler_on_startup(self):
@@ -8731,14 +8748,15 @@ class TelethonEngine:
             client = TelegramClient(session, api_id, api_hash)
             self._clients[phone] = client
         else:
-            # [WARN-04 fix] 기존 클라이언트가 연결 해제 상태면 제거 후 재생성
+            # [WARN-04 fix] 기존 클라이언트가 연결 해제 상태면 새로 생성
+            # disconnect()는 Telethon에서 코루틴이므로 동기 호출하면 실제 해제 안됨.
+            # is_connected() == False 이면 해당 객체는 재사용 불가 → 즉시 교체.
             existing = self._clients[phone]
             try:
-                if not existing.is_connected():
-                    existing.disconnect()
+                connected = existing.is_connected()
             except Exception:
-                pass
-            if not existing.is_connected():
+                connected = False
+            if not connected:
                 client = TelegramClient(session, api_id, api_hash)
                 self._clients[phone] = client
         return self._clients[phone], loop
@@ -8935,7 +8953,8 @@ class TelethonEngine:
     def disconnect_all(self):
         """모든 클라이언트 연결 해제"""
         import asyncio
-        for phone, client in self._clients.items():
+        # [CRIT-03 fix] 반복 중 _clients 가 다른 스레드에서 변경될 수 있으므로 list() 로 스냅샷
+        for phone, client in list(self._clients.items()):
             loop = self._loops.get(phone)
             if loop and client.is_connected():
                 try:
