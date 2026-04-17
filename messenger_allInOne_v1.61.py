@@ -2254,7 +2254,7 @@ class App(tk.Tk):
 
     # ── [UI-3] 사이드바 — tk.Button 전환 + 활성 탭 명확화 ──
     def _build_sidebar(self, parent: tk.Frame):
-        sb = tk.Frame(parent, bg=PALETTE["sidebar"], width=200)
+        sb = tk.Frame(parent, bg=PALETTE["sidebar"], width=220)
         sb.pack(fill=tk.Y, side=tk.LEFT)
         sb.pack_propagate(False)
         # 우측 얇은 그림자 구분선
@@ -2291,16 +2291,16 @@ class App(tk.Tk):
             label = _tab_labels.get(tab_id, tab_id)
             btn = tk.Button(
                 sb,
-                text=f"  {ico}  {label}",
+                text=f" {ico}  {label}",
                 font=(_FF, 10),
                 fg="#94A3B8", bg=PALETTE["sidebar"],
                 activeforeground="#FFFFFF",
                 activebackground=PALETTE["sidebar_h"],
                 relief="flat", anchor="w", cursor="hand2",
-                padx=10, pady=9,
+                padx=8, pady=9,
                 command=lambda k=tab_id: self._switch_tab(k)
             )
-            btn.pack(fill=tk.X, padx=6, pady=1)
+            btn.pack(fill=tk.X, padx=4, pady=1)
             self._nav_buttons[tab_id] = btn
 
         # 하단 버전 영역
