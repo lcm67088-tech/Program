@@ -7135,6 +7135,7 @@ class WorkflowExecutor:
             # 링크를 계정 수로 균등 분배
             chunk = max(1, (total + n_accts - 1) // n_accts)
             for i, acct in enumerate(active_accounts):
+                if self._is_stopped(): break          # [BUG-04 fix] 외부 루프 중지 체크
                 segment = rows[i*chunk : (i+1)*chunk]
                 for idx, row in enumerate(segment):
                     if self._is_stopped(): break
@@ -7204,113 +7205,8 @@ class WorkflowExecutor:
 
     # ════════════════════════════════════════════════════════
     # [REMOVED v1.46] telegram_join_msg → telegram_message + join_first 통합
+    # [BUG-01 fix v1.61] 고아 코드(orphaned body) 104줄 삭제
     # ════════════════════════════════════════════════════════
-    # def _run_telegram_join_msg(self):  ← 제거됨; join_first 옵션으로 대체
-
-        # ── 이미지 설정 읽기 ────────────────────────────────
-        use_img  = self.tmpl.get("use_image", False)
-        img_mode = self.tmpl.get("image_mode", "none")   # none/clipboard/file
-        img_path = self.tmpl.get("image_path", "")
-        if use_img and img_mode == "file":
-            if not (img_path and Path(img_path).exists()):
-                self._log(f"[실행불가] 파일경로 모드인데 파일 없음 ({img_path!r}). "
-                          "이미지 경로를 설정하거나 이미지 첨부를 끄세요.", "ERROR")
-                return
-        # ── 전송/닫기 방식 읽기 ─────────────────────────────
-        send_method  = self.tmpl.get("send_method",  "enter")
-        close_after  = self.tmpl.get("close_after_send", True)
-        close_method = self.tmpl.get("close_method", "esc")
-
-        tg_chrome = safe_float(self.tmpl.get("tg_chrome_load", 2.0))
-        tg_join   = safe_float(self.tmpl.get("tg_join_click",  2.0))
-        tg_type   = safe_float(self.tmpl.get("tg_after_type",  0.5))
-        tg_send   = safe_float(self.tmpl.get("tg_after_send",  1.0))
-        tg_back   = safe_float(self.tmpl.get("tg_after_back",  0.8))
-        tg_min    = safe_float(self.tmpl.get("tg_between_min", 3.0))
-        tg_max    = safe_float(self.tmpl.get("tg_between_max", 7.0))
-
-        self._log(f"텔레그램 그룹가입+메시지 시작 — 총 {total}개  "
-                  f"[이미지:{img_mode if use_img else 'none'} / "
-                  f"전송:{send_method} / 닫기:{close_method}]", "INFO")
-
-        for idx, row in enumerate(rows):
-            if self._is_stopped():
-                self._log("사용자 중지", "WARN"); break
-
-            self._progress(idx+1, total)
-            link = str(row.get("텔레그램링크", row.get("link", ""))).strip()
-            msg  = self._apply_vars(message, row)
-            if not link:
-                self._fail += 1
-                self._log("  ⚠️ 링크 없음 스킵", "WARN"); continue
-
-            self._log(f"[{idx+1}/{total}] {link}")
-            try:
-                # ① 크롬 주소창 → 링크 입력 → 엔터
-                self._click("chrome_addr")
-                time.sleep(0.3)
-                pyautogui.hotkey("ctrl", "a")
-                self._type(link)
-                self._hotkey("return")
-                if self._sleep_or_stop(tg_chrome): return  # BUG-03 fix
-
-                # ② 가입 버튼
-                self._click("join_btn")
-                time.sleep(tg_join)
-
-                # ③ 이미지 첨부 (클립보드)
-                if use_img and img_mode == "clipboard":
-                    _cb_d = self.tmpl.get("image_delays", {})
-                    _cb_paste = safe_float(_cb_d.get("cb_after_paste", 0), 0) or tg_type
-                    pyautogui.hotkey("ctrl", "v")
-                    time.sleep(_cb_paste)
-
-                # ④ 이미지 첨부 (파일경로)
-                elif use_img and img_mode == "file":
-                    try:
-                        self._tg_attach_file(img_path, tg_type)
-                    except WorkflowExecutor._DialogSkipError as _dse:
-                        self._fail += 1
-                        self._log(f"  ⚠️ {_dse} → 다음 항목으로 건너뜀", "WARN")
-                        continue
-
-                # ⑤ 텍스트 입력 + 전송
-                #    텔레그램 전용: tg_message_input_coord / tg_input_method
-                tg_im     = self.tmpl.get("tg_input_method", "direct")
-                tg_mi     = self.tmpl.get("tg_message_input_coord", {})
-                tg_mi_x   = safe_int(tg_mi.get("x", 0))
-                tg_mi_y   = safe_int(tg_mi.get("y", 0))
-                if tg_im == "coord":
-                    if not tg_mi_x or not tg_mi_y:
-                        raise RuntimeError(
-                            "좌표 미설정: 'tg_message_input_coord' "
-                            f"(x={tg_mi_x}, y={tg_mi_y})  "
-                            "→ 템플릿에서 입력창 좌표를 먼저 캡처하세요.")
-                    pyautogui.click(tg_mi_x, tg_mi_y)
-                    time.sleep(0.3)
-                else:
-                    # 바로입력: 링크/가입 후 입력창 자동 포커스
-                    time.sleep(0.2)
-                self._type(msg)
-                time.sleep(tg_type)
-                self._tg_send(send_method, tg_send)
-
-                # ⑥ 닫기
-                if close_after:
-                    self._tg_close(close_method, tg_back)
-
-                self._succ += 1
-                self._log("  ✅ 완료", "SUCCESS")
-
-            except Exception as e:
-                self._fail += 1
-                self._log(f"  ❌ 오류: {e}", "ERROR")
-                try: pyautogui.press("escape")
-                except: pass
-
-            if self._sleep_or_stop(random.uniform(tg_min, tg_max)): return  # BUG-03 fix
-
-        self._log(f"완료 — 성공:{self._succ} / 실패:{self._fail}", "SUCCESS")
 
     # ════════════════════════════════════════════════════════
     # 텔레그램 메시지 발송
@@ -7507,6 +7403,7 @@ class WorkflowExecutor:
         elif mode == "split":
             chunk = max(1, (total + n_accts - 1) // n_accts)
             for i, acct in enumerate(active_accounts):
+                if self._is_stopped(): break          # [BUG-04 fix] 외부 루프 중지 체크
                 segment = rows[i*chunk : (i+1)*chunk]
                 for idx, row in enumerate(segment):
                     if self._is_stopped(): break
@@ -8468,11 +8365,11 @@ def _jobs_start_scheduler(self) -> None:
 def _jobs_restart_scheduler(self) -> None:
     """스케줄러를 중지 후 즉시 재시작 (작업 저장/수정 후 호출).
     [v1.61 SC-6] 저장 즉시 반영 — 기존 after(200) 지연 제거
+    [WARN-01 fix] time.sleep(0.05) → app.after(50) 로 교체해 UI 스레드 블로킹 방지
     """
-    import time as _t_rst
     self._stop_scheduler()
-    _t_rst.sleep(0.05)          # 스레드 종료 여유
-    self._start_scheduler()
+    # 스레드 종료 여유 50 ms — UI 스레드를 블로킹하지 않도록 after() 사용
+    self.app.after(50, self._start_scheduler)
 
 
 def _jobs_scheduler_tick(self):
@@ -8704,7 +8601,8 @@ JobsTab._trigger_with_wait          = _jobs_trigger_with_wait           # v1.60 
 JobsTab._log_scheduler_restore      = _jobs_log_scheduler_restore       # v1.60 BENCH-2
 JobsTab._restore_scheduler_on_startup = _jobs_restore_scheduler_on_startup  # v1.61 SC-4
 JobsTab._sync_scheduler             = _jobs_sync_scheduler              # v1.61 SC-5
-JobsTab._refresh_time_estimate      = lambda self: None                 # stub (실제: 클래스 내부 정의)
+# [BUG-06 fix] lambda stub 제거 — 클래스 내부 _refresh_time_estimate 구현(line 5427)이 사용됨
+# JobsTab._refresh_time_estimate      = lambda self: None  ← 실제 메서드를 덮어쓰는 버그 수정
 
 
 # ── v1.60: 자동 업데이터 연동 ───────────────────────────────────────────────
@@ -8828,8 +8726,21 @@ class TelethonEngine:
         loop    = self._get_or_create_loop(phone)
 
         if phone not in self._clients:
-            client = TelegramClient(session, api_id, api_hash, loop=loop)
+            # [BUG-07 fix] Telethon 1.25+에서 loop= 파라미터 제거됨 → 인자 삭제
+            # loop는 _run_in_loop / asyncio.run_coroutine_threadsafe 에서 별도 전달
+            client = TelegramClient(session, api_id, api_hash)
             self._clients[phone] = client
+        else:
+            # [WARN-04 fix] 기존 클라이언트가 연결 해제 상태면 제거 후 재생성
+            existing = self._clients[phone]
+            try:
+                if not existing.is_connected():
+                    existing.disconnect()
+            except Exception:
+                pass
+            if not existing.is_connected():
+                client = TelegramClient(session, api_id, api_hash)
+                self._clients[phone] = client
         return self._clients[phone], loop
 
     def _run_in_loop(self, loop, coro):
@@ -9403,6 +9314,9 @@ class TelegramAccountsTab(tk.Frame):
         if not sel:
             return
         idx = self._tv.index(sel[0])
+        # [WARN-03 fix] 인덱스가 _accounts 범위를 벗어날 경우 IndexError 방지
+        if idx < 0 or idx >= len(self._accounts):
+            return
         self._sel_idx = idx
         self._fill_form(self._accounts[idx])
 
@@ -9520,13 +9434,21 @@ class TelegramAccountsTab(tk.Frame):
         self._status_poll_id = self.after(5000, self._poll_status)
 
     def _poll_status(self):
+        # [WARN-02 fix] 위젯이 파괴된 뒤에도 재예약되지 않도록 winfo_exists() 확인
         try:
+            if not self.winfo_exists():
+                return
             self._refresh_tv()
             if self._sel_idx >= 0 and self._sel_idx < len(self._accounts):
                 self._fill_form(self._accounts[self._sel_idx])
         except Exception:
             pass
-        self._status_poll_id = self.after(5000, self._poll_status)
+        # 위젯이 여전히 살아있을 때만 재예약
+        try:
+            if self.winfo_exists():
+                self._status_poll_id = self.after(5000, self._poll_status)
+        except Exception:
+            pass
 
 
 # ── App에 TelegramAccountsTab 연결 (monkey-patch) ────────────
