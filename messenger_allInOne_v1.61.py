@@ -7005,8 +7005,21 @@ class WorkflowExecutor:
     # 텔레그램 그룹 가입
     # ════════════════════════════════════════════════════════
     def _run_telegram_join(self):
+        """텔레그램 그룹 가입  [v1.61 TG-5 — Telethon 우선, pyautogui 폴백]
+
+        · Telethon 설치됨 + 계정 설정 있음  → TelethonEngine 사용
+        · Telethon 미설치 or 계정 없음       → 기존 pyautogui 방식
+        """
+        # ── [TG-5] Telethon 라우팅 ────────────────────────────
+        if HAS_TELETHON:
+            tg_accounts = load_json(TG_ACCOUNTS_PATH, [])
+            if tg_accounts:
+                self._run_telegram_join_telethon(tg_accounts)
+                return
+
+        # ── 폴백: 기존 pyautogui 방식 ─────────────────────────
         if not HAS_PYAUTOGUI:
-            self._log("pyautogui 가 필요합니다.", "ERROR")
+            self._log("pyautogui 가 필요합니다. (Telethon 미설치 + pyautogui 없음)", "ERROR")
             return
 
         rows  = self._read_targets()
@@ -7016,10 +7029,7 @@ class WorkflowExecutor:
             self._log("대상 목록이 비어 있습니다.", "WARN")
             return
 
-        if not rows:
-            return
-
-        self._log(f"텔레그램 그룹 가입 시작 — "
+        self._log(f"텔레그램 그룹 가입 시작 (pyautogui 모드) — "
                   f"총 {total}개", "INFO")
 
         for idx, row in enumerate(rows):
@@ -7056,11 +7066,111 @@ class WorkflowExecutor:
 
             tg_min = safe_float(self.tmpl.get("tg_between_min", 3.0))
             tg_max = safe_float(self.tmpl.get("tg_between_max", 7.0))
-            if self._sleep_or_stop(random.uniform(tg_min, tg_max)): return  # BUG-03 fix
+            if self._sleep_or_stop(random.uniform(tg_min, tg_max)): return
 
         self._log(
             f"완료 — 성공:{self._succ} / 실패:{self._fail}",
             "SUCCESS")
+
+    def _run_telegram_join_telethon(self, accounts: list):
+        """Telethon 엔진으로 그룹 가입 — Zigzag 모드 (기본)  [v1.61 TG-5]
+
+        account_mode 에 따라 분배:
+          zigzag (기본) : 계정을 순환하며 링크 한 개씩 가입
+          split         : 링크 목록을 계정 수로 균등 분배
+          all           : 모든 계정이 전체 링크 목록 가입
+        """
+        rows  = self._read_targets()
+        total = len(rows)
+        if not rows:
+            self._log("대상 목록이 비어 있습니다.", "WARN"); return
+
+        mode = self.tmpl.get("account_mode", "zigzag")
+        self._log(
+            f"[Telethon] 그룹 가입 시작 — 총 {total}개 / "
+            f"계정 {len(accounts)}개 / 모드: {mode}", "INFO")
+
+        def _log_fn(msg, lv="INFO"):
+            self._log(msg, lv)
+
+        eng = _get_tg_engine(_log_fn)
+        eng.load_accounts(accounts)
+
+        # ── 계정 사전 연결 ─────────────────────────────────
+        active_accounts = []
+        for acct in accounts:
+            if eng.connect(acct):
+                active_accounts.append(acct)
+        if not active_accounts:
+            self._log("연결 가능한 계정이 없습니다. "
+                      "텔레그램 계정 탭에서 연결 테스트를 먼저 진행하세요.",
+                      "ERROR")
+            return
+
+        tg_min  = safe_float(self.tmpl.get("tg_between_min", 3.0))
+        tg_max  = safe_float(self.tmpl.get("tg_between_max", 7.0))
+        sw_dly  = safe_float(self.tmpl.get("account_switch_delay", 1.0))
+        n_accts = len(active_accounts)
+
+        if mode == "zigzag":
+            # 계정 순환: link[0]→acct[0], link[1]→acct[1], ...
+            for idx, row in enumerate(rows):
+                if self._is_stopped(): break
+                self._progress(idx+1, total)
+                link = str(row.get("텔레그램링크",
+                           row.get("link", ""))).strip()
+                if not link:
+                    self._fail += 1; continue
+                acct = active_accounts[idx % n_accts]
+                self._log(f"[{idx+1}/{total}] [{acct['name']}] 가입: {link}")
+                ok = eng.join_group(acct, link, self._stop)
+                if ok: self._succ += 1
+                else:  self._fail += 1
+                if idx % n_accts == n_accts - 1:
+                    if self._sleep_or_stop(sw_dly): break
+                if self._sleep_or_stop(
+                        random.uniform(tg_min, tg_max)): break
+
+        elif mode == "split":
+            # 링크를 계정 수로 균등 분배
+            chunk = max(1, (total + n_accts - 1) // n_accts)
+            for i, acct in enumerate(active_accounts):
+                segment = rows[i*chunk : (i+1)*chunk]
+                for idx, row in enumerate(segment):
+                    if self._is_stopped(): break
+                    link = str(row.get("텔레그램링크",
+                               row.get("link", ""))).strip()
+                    if not link:
+                        self._fail += 1; continue
+                    abs_idx = i*chunk + idx
+                    self._progress(abs_idx+1, total)
+                    self._log(f"[{abs_idx+1}/{total}] [{acct['name']}] 가입: {link}")
+                    ok = eng.join_group(acct, link, self._stop)
+                    if ok: self._succ += 1
+                    else:  self._fail += 1
+                    if self._sleep_or_stop(
+                            random.uniform(tg_min, tg_max)): break
+
+        else:  # all — 모든 계정이 전체 링크 처리
+            for acct in active_accounts:
+                if self._is_stopped(): break
+                self._log(f"[{acct['name']}] 전체 {total}개 가입 시작")
+                for idx, row in enumerate(rows):
+                    if self._is_stopped(): break
+                    link = str(row.get("텔레그램링크",
+                               row.get("link", ""))).strip()
+                    if not link:
+                        self._fail += 1; continue
+                    self._progress(idx+1, total)
+                    ok = eng.join_group(acct, link, self._stop)
+                    if ok: self._succ += 1
+                    else:  self._fail += 1
+                    if self._sleep_or_stop(
+                            random.uniform(tg_min, tg_max)): break
+                if self._sleep_or_stop(sw_dly): break
+
+        self._log(f"[Telethon] 완료 — 성공:{self._succ} / 실패:{self._fail}",
+                  "SUCCESS")
 
     def _telegram_join_once(self, link: str) -> str:
         tg_chrome  = safe_float(self.tmpl.get("tg_chrome_load",   2.0))
@@ -7206,8 +7316,17 @@ class WorkflowExecutor:
     # 텔레그램 메시지 발송
     # ════════════════════════════════════════════════════════
     def _run_telegram_message(self):
+        """텔레그램 메시지 발송  [v1.61 TG-5 — Telethon 우선, pyautogui 폴백]"""
+        # ── [TG-5] Telethon 라우팅 ────────────────────────────
+        if HAS_TELETHON:
+            tg_accounts = load_json(TG_ACCOUNTS_PATH, [])
+            if tg_accounts:
+                self._run_telegram_message_telethon(tg_accounts)
+                return
+
+        # ── 폴백: 기존 pyautogui 방식 ─────────────────────────
         if not HAS_PYAUTOGUI:
-            self._log("pyautogui 가 필요합니다.", "ERROR")
+            self._log("pyautogui 가 필요합니다. (Telethon 미설치 + pyautogui 없음)", "ERROR")
             return
 
         rows    = self._read_targets()
@@ -7329,6 +7448,105 @@ class WorkflowExecutor:
             if self._sleep_or_stop(random.uniform(tg_min, tg_max)): return  # BUG-03 fix
 
         self._log(f"완료 — 성공:{self._succ} / 실패:{self._fail}", "SUCCESS")
+
+    def _run_telegram_message_telethon(self, accounts: list):
+        """Telethon 엔진으로 메시지 발송 — Zigzag 모드 (기본)  [v1.61 TG-5]"""
+        rows    = self._read_targets()
+        total   = len(rows)
+        message = self.tmpl.get("message") or self.job.get("message", "")
+        if not rows:
+            self._log("대상 목록이 비어 있습니다.", "WARN"); return
+        if not message:
+            self._log("메시지가 비어 있습니다.", "ERROR"); return
+
+        mode = self.tmpl.get("account_mode", "zigzag")
+        self._log(
+            f"[Telethon] 메시지 발송 시작 — 총 {total}명 / "
+            f"계정 {len(accounts)}개 / 모드: {mode}", "INFO")
+
+        def _log_fn(msg, lv="INFO"):
+            self._log(msg, lv)
+
+        eng = _get_tg_engine(_log_fn)
+        eng.load_accounts(accounts)
+
+        # ── 계정 사전 연결 ─────────────────────────────────
+        active_accounts = []
+        for acct in accounts:
+            if eng.connect(acct):
+                active_accounts.append(acct)
+        if not active_accounts:
+            self._log("연결 가능한 계정이 없습니다.", "ERROR")
+            return
+
+        tg_min  = safe_float(self.tmpl.get("tg_between_min", 3.0))
+        tg_max  = safe_float(self.tmpl.get("tg_between_max", 7.0))
+        sw_dly  = safe_float(self.tmpl.get("account_switch_delay", 1.0))
+        n_accts = len(active_accounts)
+
+        if mode == "zigzag":
+            for idx, row in enumerate(rows):
+                if self._is_stopped(): break
+                self._progress(idx+1, total)
+                peer = str(row.get("텔레그램링크",
+                           row.get("link",
+                           row.get("username", "")))).strip()
+                if not peer:
+                    self._fail += 1; continue
+                acct = active_accounts[idx % n_accts]
+                msg  = self._apply_vars(message, row)
+                self._log(f"[{idx+1}/{total}] [{acct['name']}] → {peer}")
+                ok = eng.send_message(acct, peer, msg, self._stop)
+                if ok: self._succ += 1
+                else:  self._fail += 1
+                if idx % n_accts == n_accts - 1:
+                    if self._sleep_or_stop(sw_dly): break
+                if self._sleep_or_stop(
+                        random.uniform(tg_min, tg_max)): break
+
+        elif mode == "split":
+            chunk = max(1, (total + n_accts - 1) // n_accts)
+            for i, acct in enumerate(active_accounts):
+                segment = rows[i*chunk : (i+1)*chunk]
+                for idx, row in enumerate(segment):
+                    if self._is_stopped(): break
+                    peer = str(row.get("텔레그램링크",
+                               row.get("link",
+                               row.get("username", "")))).strip()
+                    if not peer:
+                        self._fail += 1; continue
+                    abs_idx = i*chunk + idx
+                    self._progress(abs_idx+1, total)
+                    msg = self._apply_vars(message, row)
+                    self._log(f"[{abs_idx+1}/{total}] [{acct['name']}] → {peer}")
+                    ok = eng.send_message(acct, peer, msg, self._stop)
+                    if ok: self._succ += 1
+                    else:  self._fail += 1
+                    if self._sleep_or_stop(
+                            random.uniform(tg_min, tg_max)): break
+
+        else:  # all
+            for acct in active_accounts:
+                if self._is_stopped(): break
+                self._log(f"[{acct['name']}] 전체 {total}명 발송 시작")
+                for idx, row in enumerate(rows):
+                    if self._is_stopped(): break
+                    peer = str(row.get("텔레그램링크",
+                               row.get("link",
+                               row.get("username", "")))).strip()
+                    if not peer:
+                        self._fail += 1; continue
+                    self._progress(idx+1, total)
+                    msg = self._apply_vars(message, row)
+                    ok = eng.send_message(acct, peer, msg, self._stop)
+                    if ok: self._succ += 1
+                    else:  self._fail += 1
+                    if self._sleep_or_stop(
+                            random.uniform(tg_min, tg_max)): break
+                if self._sleep_or_stop(sw_dly): break
+
+        self._log(f"[Telethon] 완료 — 성공:{self._succ} / 실패:{self._fail}",
+                  "SUCCESS")
 
     # ── 텔레그램 공통 유틸 ──────────────────────────────────
     def _tg_send(self, send_method: str, delay: float):

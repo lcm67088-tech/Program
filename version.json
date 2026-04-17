@@ -1,7 +1,7 @@
 {
-  "version": "1.60",
-  "download_url": "https://github.com/lcm67088-tech/Program/raw/main/1.60%20%EB%A9%94%EC%8B%A0%EC%A0%80%20%EC%98%AC%EC%9D%B8%EC%9B%90.zip",
+  "version": "1.61",
+  "download_url": "https://github.com/lcm67088-tech/Program/raw/main/1.61%20%EB%A9%94%EC%8B%A0%EC%A0%80%20%EC%98%AC%EC%9D%B8%EC%9B%90.zip",
   "md5": "",
-  "release_notes": "v1.60",
-  "updated_at": "2026-03-16"
+  "release_notes": "v1.61 — Telethon 다계정 엔진 / UI 리디자인 / 스케줄 threading 재작성",
+  "updated_at": "2026-04-17"
 }
