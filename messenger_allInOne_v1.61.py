@@ -2127,6 +2127,11 @@ class App(tk.Tk):
                 "min": 2.0,
                 "max": 5.0,
             },
+            # Telegram API 앱 인증 정보 — 계정 공통 (my.telegram.org 에서 1회 발급)
+            "tg_api": {
+                "api_id":   "",
+                "api_hash": "",
+            },
         }
 
     # ─────────────────────────────────────────────────────────
@@ -8942,12 +8947,17 @@ class TelethonEngine:
         return self._loops[phone]
 
     def _ensure_client(self, acct: dict):
-        """클라이언트가 없거나 연결 해제 상태면 새로 생성"""
+        """클라이언트가 없거나 연결 해제 상태면 새로 생성
+        API ID / API Hash 는 계정별 값보다 전역 config(tg_api)를 우선 사용한다.
+        """
         if not HAS_TELETHON:
             raise RuntimeError("telethon 패키지가 필요합니다: pip install telethon")
         phone   = str(acct.get("phone", ""))
-        api_id  = int(acct.get("api_id", 0))
-        api_hash= str(acct.get("api_hash", ""))
+        # 전역 config 에서 api_id/api_hash 읽기 (계정별 값은 fallback)
+        _cfg = load_json(CONFIG_PATH, {})
+        _tg  = _cfg.get("tg_api", {})
+        api_id   = int(_tg.get("api_id")  or acct.get("api_id",  0) or 0)
+        api_hash = str(_tg.get("api_hash") or acct.get("api_hash", "") or "")
         session = str(TG_SESSION_DIR / f"session_{phone}")
 
         # [NEW-BUG-04 fix] _loops/_clients dict 접근 시 lock 으로 race condition 방지
@@ -9358,19 +9368,89 @@ class TelegramAccountsTab(tk.Frame):
                         int(-1 * (e.delta / 120)), "units"))
 
         f = self._edit_frame
+        self._vars: dict[str, tk.StringVar] = {}
 
-        # ── 섹션: 기본 정보 ───────────────────────────────
-        self._sec_label(f, "🔑 API 인증 정보")
+        # ════════════════════════════════════════════════════
+        # [전역] API 인증 정보 — 앱 단위, 계정 공통으로 1회만 설정
+        # ════════════════════════════════════════════════════
+        api_card = tk.Frame(f, bg=PALETTE["hover"],
+                            highlightbackground="#93C5FD",
+                            highlightthickness=1)
+        api_card.pack(fill=tk.X, padx=16, pady=(12, 4))
+        api_inner = tk.Frame(api_card, bg=PALETTE["hover"])
+        api_inner.pack(fill=tk.X, padx=12, pady=10)
+
+        # 안내 문구
+        tk.Label(api_inner,
+                 text="🔑  Telegram API 앱 인증 정보  (모든 계정 공통 — 한 번만 입력)",
+                 font=(_FF, 9, "bold"), bg=PALETTE["hover"],
+                 fg=PALETTE["primary"]).pack(anchor="w", pady=(0, 6))
+
+        api_grid = tk.Frame(api_inner, bg=PALETTE["hover"])
+        api_grid.pack(fill=tk.X)
+
+        # API ID
+        tk.Label(api_grid, text="API ID",
+                 font=F_LABEL, bg=PALETTE["hover"],
+                 fg=PALETTE["text2"], anchor="e", width=9
+                 ).grid(row=0, column=0, sticky="e", padx=(0, 8), pady=3)
+        self._api_id_var = tk.StringVar()
+        tk.Entry(api_grid, textvariable=self._api_id_var,
+                 font=F_MONO,
+                 bg=PALETTE["card"], fg=PALETTE["text"],
+                 insertbackground=PALETTE["text"],
+                 relief=tk.FLAT,
+                 highlightbackground=PALETTE["border"],
+                 highlightthickness=1, width=30
+                 ).grid(row=0, column=1, sticky="ew", pady=3)
+
+        # API Hash
+        tk.Label(api_grid, text="API Hash",
+                 font=F_LABEL, bg=PALETTE["hover"],
+                 fg=PALETTE["text2"], anchor="e", width=9
+                 ).grid(row=1, column=0, sticky="e", padx=(0, 8), pady=3)
+        self._api_hash_var = tk.StringVar()
+        tk.Entry(api_grid, textvariable=self._api_hash_var,
+                 font=F_MONO, show="*",
+                 bg=PALETTE["card"], fg=PALETTE["text"],
+                 insertbackground=PALETTE["text"],
+                 relief=tk.FLAT,
+                 highlightbackground=PALETTE["border"],
+                 highlightthickness=1, width=30
+                 ).grid(row=1, column=1, sticky="ew", pady=3)
+        api_grid.columnconfigure(1, weight=1)
+
+        # 발급 안내 + API 저장 버튼
+        api_btn_row = tk.Frame(api_inner, bg=PALETTE["hover"])
+        api_btn_row.pack(fill=tk.X, pady=(6, 0))
+        tk.Label(api_btn_row,
+                 text="💡 my.telegram.org → API development tools 에서 발급",
+                 font=F_SMALL, bg=PALETTE["hover"],
+                 fg=PALETTE["muted"]).pack(side=tk.LEFT)
+        tk.Button(api_btn_row, text="💾 API 저장",
+                  command=self._save_global_api,
+                  font=F_BTN_S, bg=PALETTE["primary"], fg="#fff",
+                  activebackground=PALETTE["primary2"],
+                  relief=tk.FLAT, cursor="hand2",
+                  padx=12, pady=4, bd=0
+                  ).pack(side=tk.RIGHT)
+
+        # 저장된 전역 API 값 불러오기
+        _cfg = load_json(CONFIG_PATH, {})
+        self._api_id_var.set(_cfg.get("tg_api", {}).get("api_id", ""))
+        self._api_hash_var.set(_cfg.get("tg_api", {}).get("api_hash", ""))
+
+        # ════════════════════════════════════════════════════
+        # [개별] 계정 정보 — 이름 + 전화번호만
+        # ════════════════════════════════════════════════════
+        self._sec_label(f, "📱 계정 정보")
         grid = tk.Frame(f, bg=PALETTE["bg"])
         grid.pack(fill=tk.X, padx=16, pady=(0, 12))
 
         fields = [
-            ("표시 이름",  "name",     False),
-            ("전화번호",   "phone",    False),
-            ("API ID",    "api_id",   False),
-            ("API Hash",  "api_hash", True),
+            ("표시 이름",  "name",  False),
+            ("전화번호",   "phone", False),
         ]
-        self._vars: dict[str, tk.StringVar] = {}
         for row_i, (label, key, is_pwd) in enumerate(fields):
             tk.Label(grid, text=label,
                      font=F_LABEL, bg=PALETTE["bg"],
@@ -9379,9 +9459,8 @@ class TelegramAccountsTab(tk.Frame):
                             sticky="e", padx=(0, 8), pady=4)
             var = tk.StringVar()
             self._vars[key] = var
-            show = "*" if is_pwd else ""
             tk.Entry(grid, textvariable=var,
-                     font=F_MONO, show=show,
+                     font=F_MONO,
                      bg=PALETTE["card2"],
                      fg=PALETTE["text"],
                      insertbackground=PALETTE["text"],
@@ -9516,18 +9595,36 @@ class TelegramAccountsTab(tk.Frame):
         note_inner.pack(fill=tk.X, padx=12, pady=8)
         tk.Label(note_inner,
                  text=(
-                     "💡 API ID / API Hash 발급 방법\n"
-                     "  1. https://my.telegram.org 접속 → Log in\n"
-                     "  2. API development tools → Create application\n"
-                     "  3. App api_id / App api_hash 복사\n\n"
                      "⚠️  처음 연결 시 전화번호로 OTP 인증이 필요합니다.\n"
-                     "   콘솔에서 python -c \"import asyncio; from telethon import TelegramClient; ...\"\n"
-                     "   방식으로 미리 세션 파일을 생성해두면 이후 자동 재연결됩니다."
+                     "   연결 테스트 버튼을 누르면 콘솔에 인증 코드 입력 창이 뜹니다."
                  ),
                  font=F_SMALL, bg=PALETTE["card2"],
                  fg=PALETTE["muted"], justify=tk.LEFT,
                  anchor="nw", padx=4, pady=2
                  ).pack(fill=tk.X)
+
+    def _save_global_api(self):
+        """전역 API ID / API Hash를 config.json에 저장"""
+        api_id   = self._api_id_var.get().strip()
+        api_hash = self._api_hash_var.get().strip()
+        if not api_id or not api_hash:
+            messagebox.showwarning("입력 오류",
+                                   "API ID와 API Hash를 모두 입력하세요.")
+            return
+        try:
+            int(api_id)
+        except ValueError:
+            messagebox.showwarning("입력 오류", "API ID는 숫자여야 합니다.")
+            return
+        cfg = load_json(CONFIG_PATH, self.app._default_config())
+        cfg.setdefault("tg_api", {})
+        cfg["tg_api"]["api_id"]   = api_id
+        cfg["tg_api"]["api_hash"] = api_hash
+        save_json(CONFIG_PATH, cfg)
+        self.app.config_data = cfg
+        messagebox.showinfo("저장 완료",
+                            "✅ API 인증 정보가 저장되었습니다.\n"
+                            "이제 계정을 추가하고 연결 테스트를 진행하세요.")
 
     def _sec_label(self, parent, text: str):
         """섹션 구분 레이블 (개선판)"""
@@ -9644,14 +9741,14 @@ class TelegramAccountsTab(tk.Frame):
         if not data.get("phone"):
             messagebox.showwarning("입력 오류", "전화번호를 입력하세요.")
             return
-        if not data.get("api_id") or not data.get("api_hash"):
-            messagebox.showwarning("입력 오류", "API ID와 API Hash를 입력하세요.")
-            return
-        # api_id 숫자 검증
-        try:
-            int(data["api_id"])
-        except ValueError:
-            messagebox.showwarning("입력 오류", "API ID는 숫자여야 합니다.")
+        # 전역 API 설정 여부 확인
+        _cfg = load_json(CONFIG_PATH, {})
+        _tg  = _cfg.get("tg_api", {})
+        if not _tg.get("api_id") or not _tg.get("api_hash"):
+            messagebox.showwarning(
+                "API 미설정",
+                "상단의 API 인증 정보(API ID / API Hash)를 먼저 입력하고\n"
+                "💾 API 저장 버튼을 눌러 저장하세요.")
             return
 
         if self._sel_idx < 0:
