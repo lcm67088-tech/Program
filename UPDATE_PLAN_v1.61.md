@@ -1,590 +1,840 @@
 # 메신저 올인원 v1.61 업데이트 계획서
 
 > 작성일: 2026-04-17  
-> 최종수정: 2026-04-17 (지그재그 모드 추가)  
+> 최종수정: 2026-04-17 (전면 재작성 — UI 리디자인 + 스케줄 버그 + Telethon 방향성 포함)  
 > 기준 버전: v1.60.2  
 > 목표 버전: v1.61  
 
 ---
 
-## 1. 업데이트 배경 및 목적
+## 0. 업데이트 방향 요약
 
-### 현재 v1.60의 병목 구조
-
-현재 텔레그램 작업(`telegram_join`, `telegram_message`)은 아래 흐름으로 동작한다.
-
-```
-[크롬 주소창 좌표 클릭]
-    → t.me/링크 입력 + Enter
-    → 크롬이 OS 프로토콜 핸들러(tg://)로 전달
-    → OS가 기본 등록된 텔레그램 앱 1개로만 전달
-    → 텔레그램 앱에서 가입/메시지 좌표 클릭
-```
-
-**핵심 문제:**  
-- `pyautogui`는 단일 마우스/키보드를 사용하므로 동시 실행 불가
-- OS 프로토콜 핸들러는 텔레그램 앱을 1개만 받으므로, V5 등으로 멀티 인스턴스를 열어도 어느 계정이 링크를 받는지 제어 불가
-- 결과적으로 **1개 계정 순차 실행만 가능** → 처리 속도 병목
-
-### 해결 방향
-
-크롬 앱이 아닌 **`web.telegram.org`를 크롬 독립 세션(--user-data-dir)으로 N개 열어**,  
-각 크롬 창을 계정별로 매핑하고 순차 전환하며 작업을 처리한다.
-
-- 구글 계정 불필요
-- 텔레그램 앱 설치 불필요
-- 로그인 세션 영구 유지 (게스트 모드와 달리 창을 닫아도 유지)
-- 계정 수 무제한
-
----
-
-## 2. 핵심 아이디어: 크롬 독립 세션 방식
-
-### 원리
-
-크롬 실행 시 `--user-data-dir` 옵션으로 데이터 저장 폴더를 지정하면,  
-해당 폴더가 다른 크롬끼리는 완전히 독립된 브라우저로 동작한다.
-
-```
-chrome.exe --user-data-dir="C:\TelegramAccounts\계정1" --new-window
-chrome.exe --user-data-dir="C:\TelegramAccounts\계정2" --new-window
-chrome.exe --user-data-dir="C:\TelegramAccounts\계정3" --new-window
-```
-
-```
-C:\TelegramAccounts\
-├── 계정1\   ← 텔레그램 계정 A 로그인 세션 저장
-├── 계정2\   ← 텔레그램 계정 B 로그인 세션 저장
-├── 계정3\   ← 텔레그램 계정 C 로그인 세션 저장
-```
-
-### 로그인 과정 (최초 1회만)
-
-1. 프로그램에서 "계정 추가" 클릭
-2. 해당 폴더로 크롬 창이 자동으로 열림
-3. `web.telegram.org` 접속
-4. 텔레그램 전화번호로 로그인 (QR 또는 SMS 인증)
-5. 이후 해당 폴더로 크롬을 열 때마다 로그인 유지
-
-### 게스트 모드와 비교
-
-| 구분 | 게스트 모드 | --user-data-dir |
+| 영역 | v1.60 상태 | v1.61 목표 |
 |---|---|---|
-| 계정 수 제한 | 없음 | 없음 |
-| 구글 계정 필요 | 불필요 | 불필요 |
-| 세션 유지 | 창 닫으면 삭제 | 영구 유지 |
-| 재로그인 | 매번 필요 | 최초 1회만 |
-| 관리 편의 | 구분 어려움 | 폴더명으로 구분 |
+| **텔레그램 엔진** | pyautogui 좌표 기반 (1계정 순차) | **Telethon API로 전면 교체** (15계정 동시) |
+| **카카오 엔진** | pyautogui 좌표 기반 (유지) | 현행 유지 (API 없음) |
+| **UI 전반** | 기능 중심, 섹션 혼재 | community_poster v5.20 스타일로 정비 |
+| **스케줄러** | 오류 있음 (아래 상세 기술) | 완전 수정 + community_poster 방식 벤치마킹 |
+
+### v1.61 핵심 3대 목표
+
+1. **텔레그램 엔진 → Telethon 교체** (PC 1대, 15계정 동시 24시간 풀가동)
+2. **UI 전반 리디자인** (community_poster v5.20 벤치마킹 — 깔끔·직관적)
+3. **스케줄 기능 완전 수정** (community_poster 방식 벤치마킹 — 신뢰성 확보)
 
 ---
 
-## 3. 실행 모드 3가지
+## 1. [엔진 교체] 텔레그램 Telethon 전환
 
-### 모드 A: 반복 모드 (All Accounts)
+### 1-1. 왜 Telethon인가
 
-링크 목록 전체를 등록된 모든 계정이 각각 처리한다.
+| 비교 항목 | pyautogui (현행) | Telethon (v1.61) |
+|---|---|---|
+| 실행 방식 | 마우스/키보드 클릭 | Telegram API 직접 호출 |
+| 동시 계정 수 | **1개** (물리적 한계) | **15개 동시** (스레드) |
+| PC당 24h 운영 | 불가 (순차 → 분할) | 가능 (계정별 독립 스레드) |
+| Chrome 필요 | 필요 | **불필요** |
+| 좌표 설정 | 필요 | **불필요** |
+| 백그라운드 실행 | 불가 (창 필요) | **가능** |
+| 밴 리스크 | 패턴 기반 → 딜레이 관리 | 동일 (패턴 기반) |
 
-```
-링크 목록: [1번, 2번, 3번, 4번, 5번, 6번]
-계정: [계정A, 계정B, 계정C]
-
-계정A: 1→2→3→4→5→6 (전부)
-계정B: 1→2→3→4→5→6 (전부)
-계정C: 1→2→3→4→5→6 (전부)
-
-총 발송: 18회
-실행 순서: 계정A 전체 완료 → 계정B 전체 완료 → 계정C 전체 완료
-```
-
-**용도:** 같은 메시지를 여러 계정으로 반복 발송할 때
+**핵심:** pyautogui는 물리 마우스가 1개이므로 PC 1대에서 동시 실행이 구조적으로 불가능.  
+Telethon은 네트워크 요청이므로 스레드로 진정한 동시 실행이 가능.
 
 ---
 
-### 모드 B: 분배 모드 (Split)
-
-링크 목록을 계정 수만큼 균등 분배해 각 계정이 자기 구간만 처리한다.
+### 1-2. 시스템 구성 변경
 
 ```
-링크 목록: [1번, 2번, 3번, 4번, 5번, 6번]
-계정: [계정A, 계정B, 계정C]
+[현행 v1.60]
+   카카오 ──→ pyautogui (좌표 클릭)
+   텔레그램 ──→ pyautogui (좌표 클릭)
 
-계정A: 1→2 (1~2번)
-계정B: 3→4 (3~4번)
-계정C: 5→6 (5~6번)
-
-총 발송: 6회 (3배 속도)
-실행 순서: 계정A 구간 완료 → 계정B 구간 완료 → 계정C 구간 완료
+[v1.61]
+   카카오 ──→ pyautogui (기존 유지)
+   텔레그램 ──→ Telethon (API 직접)
+                  ├── 계정1 스레드 (24h)
+                  ├── 계정2 스레드 (24h)
+                  ├── ...
+                  └── 계정15 스레드 (24h)
 ```
-
-**용도:** 처리 속도를 높이고 싶을 때, 계정별 발송 이력을 분리하고 싶을 때
 
 ---
 
-### 모드 C: 지그재그 모드 (Zigzag) ⭐ 기본값
+### 1-3. API 인증 구조
 
-링크 1개씩 계정을 번갈아가며 처리한다. **가장 자연스럽고 권장되는 방식.**
+**각 계정에서 개별 API 발급 필요**
 
 ```
-링크 목록: [1번, 2번, 3번, 4번, 5번, 6번]
-계정: [계정A, 계정B, 계정C]
-
-1번 → 계정A
-2번 → 계정B
-3번 → 계정C
-4번 → 계정A
-5번 → 계정B
-6번 → 계정C
-
-총 발송: 6회 (3배 속도)
-실행 순서: 링크 단위로 계정 교체 반복
+발급 위치: https://my.telegram.org/apps
+필요 정보:
+  - api_id   (숫자)
+  - api_hash (문자열)
+  - session  (자동 생성 — 최초 로그인 1회)
 ```
 
-**용도:** 속도와 자연스러움을 동시에 원할 때 (기본 권장 모드)
-
-#### 지그재그가 유리한 이유
-
-1. **자연스러운 발송 패턴**
-   - 같은 채널에 동일 계정이 연속으로 메시지를 보내지 않음
-   - 채널1 → 계정A, 채널2 → 계정B, 채널3 → 계정C 순으로 자동 분산
-   - 텔레그램 패턴 감지 알고리즘에 걸릴 가능성 최소화
-
-2. **계정 전환 딜레이 활용**
-   - 계정A가 채널1에서 작업하는 2~30초 사이에 계정B가 채널2 준비
-   - 실질적으로 계정 간 병렬 효과
-   - 계정 간 대기 시간 낭비 없음
-
-3. **계정 부하 균등화**
-   - 어느 계정도 집중 사용되지 않아 계정 밴 위험 분산
-   - 각 계정의 발송 수가 균등하게 유지됨
-
-#### 3가지 모드 최종 비교
-
-| 모드 | 발송 패턴 | 총 발송 수 | 속도 | 자연스러움 | 계정 부하 | 권장 상황 |
-|---|---|---|---|---|---|---|
-| 반복 (All) | A전체→B전체→C전체 | 링크×계정 | 느림 | 낮음 | 집중 | 동일 메시지 다중 발송 |
-| 분배 (Split) | A구간→B구간→C구간 | 링크 수 | 빠름 | 보통 | 균등 | 계정별 이력 분리 |
-| 지그재그 (Zigzag) | A→B→C→A→B→C | 링크 수 | 빠름 | **높음** | **균등** | **일반적인 홍보 작업** |
+**계정별 세션 관리:**
+```python
+# 세션 파일: accounts/계정1.session, 계정2.session, ...
+client = TelegramClient(f"accounts/{name}", api_id, api_hash)
+```
 
 ---
 
-## 4. 변경이 필요한 코드 구조
+### 1-4. 텔레그램 기능 구현 계획
 
-### 4-1. 현재 좌표 구조 (1세트)
+#### (A) 그룹 가입 (`telegram_join`)
 
 ```python
-# 현재: 템플릿 1개에 좌표 1세트
-template = {
-    "coords": {
-        "chrome_addr":   {"x": 100, "y": 50},
-        "join_btn":      {"x": 500, "y": 300},
-        "close_tab":     {"x": 800, "y": 30},
-        "message_input": {"x": 500, "y": 600},
-        "send_btn":      {"x": 750, "y": 600},
-    }
+async def join_group(client, link):
+    """t.me/xxx 링크로 그룹/채널 가입"""
+    try:
+        result = await client(JoinChannelRequest(link))
+        return "success"
+    except UserAlreadyParticipantError:
+        return "already_joined"
+    except FloodWaitError as e:
+        await asyncio.sleep(e.seconds)
+        return "flood_wait"
+    except Exception as e:
+        return f"error: {e}"
+```
+
+#### (B) 메시지 발송 (`telegram_message`)
+
+```python
+async def send_message(client, link, text, image_path=None):
+    """채널/그룹에 메시지 + 이미지 발송"""
+    entity = await client.get_entity(link)
+    if image_path:
+        await client.send_file(entity, image_path, caption=text)
+    else:
+        await client.send_message(entity, text)
+```
+
+#### (C) 15계정 동시 실행
+
+```python
+def run_all_accounts():
+    threads = []
+    for account in accounts:
+        t = threading.Thread(
+            target=asyncio.run,
+            args=(account_loop(account),),
+            daemon=True
+        )
+        threads.append(t)
+        t.start()
+    # 각 계정 스레드가 24시간 독립 실행
+```
+
+---
+
+### 1-5. 제재 탐지 및 대응
+
+#### 제재 유형별 처리
+
+| 오류 | 의미 | 대응 |
+|---|---|---|
+| `FloodWaitError(n)` | 속도 제한 — n초 대기 필요 | n초 대기 후 재시도, 다른 계정은 계속 실행 |
+| `PeerFloodError` | 스팸 감지 — 계정 위험 | 해당 계정 당일 중지, 익일 재개 |
+| `UserBannedInChannelError` | 채널에서 차단 | 해당 채널 블랙리스트 추가, 스킵 |
+| `ChatWriteForbiddenError` | 메시지 권한 없음 | 실패 로그 + 스킵 |
+| `AccountBannedError` | 계정 완전 정지 | 즉시 전체 중지 + 사용자 알림 |
+
+#### 계정 상태 모니터링 UI
+
+```
+┌──────────────────────────────────────────┐
+│ 계정 상태 모니터                          │
+├──────┬────────┬──────┬───────────────────┤
+│ 계정 │ 상태   │ 발송 │ 비고              │
+├──────┼────────┼──────┼───────────────────┤
+│ 계정1│ 🟢 실행│  234 │                   │
+│ 계정2│ 🟡 대기│  189 │ FloodWait 32초    │
+│ 계정3│ 🔴 중지│   45 │ PeerFlood — 중지  │
+│ 계정4│ ⚫ 밴  │    0 │ AccountBanned ⚠️  │
+└──────┴────────┴──────┴───────────────────┘
+```
+
+#### 예방 설정
+
+```python
+# 계정별 일일 발송 한도
+daily_limit = 500  # 기본값
+
+# 신규 계정 워밍업 스케줄
+warmup_schedule = {
+    "day1": 50,
+    "day2": 100,
+    "day3": 200,
+    "day7+": 500
+}
+
+# 연속 실패 후 일시 중지
+max_consecutive_fail = 3  # 3회 연속 실패 시 10분 휴식
+```
+
+---
+
+### 1-6. UI 변경 — 텔레그램 계정 관리 탭
+
+기존 `TemplateTab`의 좌표 설정 영역을 **텔레그램 계정 관리** 섹션으로 교체.
+
+```
+┌────────────────────────────────────────────────────┐
+│ 텔레그램 계정 관리                    [+ 계정 추가] │
+├────────────────────────────────────────────────────┤
+│ 계정명   API ID    상태    발송수   [수정] [삭제]   │
+│ 계정1    12345678  🟢 실행   234                   │
+│ 계정2    87654321  🟡 대기   189                   │
+│ 계정3    11111111  🔴 정지    45                   │
+├────────────────────────────────────────────────────┤
+│ [▶ 선택 계정 시작]  [■ 전체 중지]  [↻ 상태 갱신]  │
+└────────────────────────────────────────────────────┘
+```
+
+**계정 추가 다이얼로그:**
+```
+계정명:    [__________]
+API ID:    [__________]
+API Hash:  [__________]
+전화번호:  [__________]  ← 최초 로그인용
+일일 한도: [____] 건    기본값 500
+워밍업:    [✓] 신규 계정 워밍업 모드
+```
+
+---
+
+## 2. [UI 리디자인] community_poster v5.20 벤치마킹
+
+### 2-1. 현재 UI 문제점
+
+| 문제 | 현행 v1.60 상태 | v1.61 목표 |
+|---|---|---|
+| **스타일 헬퍼 없음** | 각 탭에서 `tk.Button`, `tk.Label` 직접 생성, 스타일 분산 | `App` 클래스에 `_button()`, `_card()`, `_label()`, `_badge()`, `_separator()` 중앙화 |
+| **hover 효과 없음** | 버튼에 hover 없음 | 모든 클릭 요소에 hover 색상 전환 + `_darken()` 헬퍼 |
+| **카드 컨테이너 없음** | 섹션 구분 없이 나열 | border 1px + padding 16px 카드 단위 레이아웃 |
+| **탭 선택 시각화 미흡** | PALETTE["selected"] bg 변경만 | **폰트 bold + fg white + bg sidebar_h** 동시 변경 |
+| **사이드바 활성 탭 구분 불명확** | `tk.Label`로 탭 버튼 구현 | `tk.Button`으로 교체 + 활성/비활성 명확 분리 |
+| **헤더 상태 정보 없음** | 의존성 뱃지만 표시 | **실행 중인 작업 수 + 스케줄 ON/OFF 상태** 실시간 표시 |
+| **도움말 없음** | ❓ 버튼 없음 | 각 탭에 `_HELP_DATA` 딕셔너리 + 팝업 도움말 |
+
+---
+
+### 2-2. community_poster에서 직접 이식할 패턴
+
+#### (A) 스타일 헬퍼 메서드 (App 클래스)
+
+```python
+# community_poster v5.20 에서 직접 이식
+def _styled_frame(self, parent, bg=None, padx=0, pady=0):
+    return tk.Frame(parent, bg=bg or PALETTE["card"],
+                    padx=padx, pady=pady)
+
+def _card(self, parent, padx=16, pady=12):
+    """border 1px + 내부 padding 카드 컨테이너"""
+    outer = tk.Frame(parent, bg=PALETTE["bg"])
+    inner = tk.Frame(outer, bg=PALETTE["card"],
+                     highlightbackground=PALETTE["border"],
+                     highlightthickness=1)
+    inner.pack(fill="both", expand=True, padx=2, pady=2)
+    inner._pad = tk.Frame(inner, bg=PALETTE["card"])
+    inner._pad.pack(fill="both", expand=True, padx=padx, pady=pady)
+    return outer, inner._pad
+
+def _label(self, parent, text, size=10, weight="normal", color=None, **kw):
+    return tk.Label(parent, text=text,
+                    font=(_FF, size, weight),
+                    fg=color or PALETTE["text"],
+                    bg=parent.cget("bg"), **kw)
+
+def _button(self, parent, text, command, color=None,
+            text_color="#FFFFFF", size=9, width=None, **kw):
+    """hover 효과 내장 버튼"""
+    orig = color or PALETTE["primary"]
+    cfg = dict(text=text, command=command,
+               font=(_FF, size, "bold"),
+               bg=orig, fg=text_color,
+               activebackground=orig, activeforeground=text_color,
+               relief="flat", cursor="hand2",
+               padx=12, pady=5, bd=0)
+    if width: cfg["width"] = width
+    cfg.update(kw)
+    b = tk.Button(parent, **cfg)
+    b.bind("<Enter>", lambda e: b.config(bg=self._darken(orig)))
+    b.bind("<Leave>", lambda e: b.config(bg=orig))
+    return b
+
+def _darken(self, hex_color, factor=0.85):
+    """hover 시 색상 어둡게"""
+    h = hex_color.lstrip("#")
+    r,g,b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+    return "#{:02x}{:02x}{:02x}".format(
+        int(r*factor), int(g*factor), int(b*factor))
+
+def _separator(self, parent, orient="horizontal", color=None):
+    c = color or PALETTE["border"]
+    if orient == "horizontal":
+        return tk.Frame(parent, bg=c, height=1)
+    return tk.Frame(parent, bg=c, width=1)
+
+def _badge(self, parent, text, color):
+    """색상 배경 작은 뱃지"""
+    f = tk.Frame(parent, bg=color, padx=6, pady=2)
+    tk.Label(f, text=text, font=(_FF,8,"bold"),
+             fg="#fff", bg=color).pack()
+    return f
+```
+
+---
+
+#### (B) 헤더 — 실시간 상태 표시
+
+**현행:** 로고 + 버전 + 의존성 뱃지만  
+**변경:** 현행 유지 + **우측에 "실행 중 N개" + "스케줄 ON/OFF"** 동적 레이블 추가
+
+```python
+def _build_header(self):
+    hdr = tk.Frame(self, bg=PALETTE["sidebar"], height=56)
+    hdr.pack(fill="x")
+    hdr.pack_propagate(False)
+
+    # 로고 + 타이틀
+    logo = tk.Frame(hdr, bg=PALETTE["sidebar"])
+    logo.pack(side="left", padx=20)
+    tk.Label(logo, text="💬", font=F_ICON,
+             fg=PALETTE["primary"], bg=PALETTE["sidebar"]).pack(side="left")
+    tk.Label(logo, text=" 메신저 올인원",
+             font=F_TITLE, fg="#F1F5F9",
+             bg=PALETTE["sidebar"]).pack(side="left")
+    tk.Label(logo, text=f" v{APP_VERSION}",
+             font=F_SMALL, fg=PALETTE["muted"],
+             bg=PALETTE["sidebar"]).pack(side="left")
+
+    # 우측 — 상태 뱃지 (community_poster 방식)
+    right = tk.Frame(hdr, bg=PALETTE["sidebar"])
+    right.pack(side="right", padx=20)
+
+    self._queue_var = tk.StringVar(value="실행 없음")    # ← 신규
+    self._sched_var = tk.StringVar(value="스케줄 OFF")   # ← 신규
+
+    tk.Label(right, textvariable=self._queue_var,
+             font=F_SMALL, fg=PALETTE["muted"],
+             bg=PALETTE["sidebar"]).pack(side="right", padx=8)
+    tk.Label(right, textvariable=self._sched_var,
+             font=F_SMALL, fg=PALETTE["muted"],
+             bg=PALETTE["sidebar"]).pack(side="right", padx=8)
+```
+
+---
+
+#### (C) 사이드바 — tk.Button 전환 + hover/active 명확화
+
+**현행:** `tk.Label` + `bind(<Button-1>)` 조합  
+**변경:** `tk.Button` 으로 전환, `PALETTE["sidebar_h"]` 활성 배경 명확히
+
+```python
+def _build_sidebar(self, parent):
+    sb = tk.Frame(parent, bg=PALETTE["sidebar"], width=200)
+    sb.pack(side="left", fill="y")
+    sb.pack_propagate(False)
+
+    tk.Frame(sb, bg=PALETTE["sidebar"], height=16).pack()
+
+    self._nav_buttons = {}
+    for tab_id, label in SIDEBAR_TABS:
+        btn = tk.Button(sb,
+            text=f"  {label}",
+            font=(_FF, 10),
+            fg="#94A3B8", bg=PALETTE["sidebar"],
+            activeforeground="#FFFFFF",
+            activebackground=PALETTE["sidebar_h"],
+            relief="flat", anchor="w", cursor="hand2",
+            padx=16, pady=10,
+            command=lambda k=tab_id: self._switch_tab(k))
+        btn.pack(fill="x")
+        self._nav_buttons[tab_id] = btn
+
+    # 하단 버전
+    tk.Frame(sb, bg=PALETTE["sidebar"]).pack(fill="y", expand=True)
+    tk.Label(sb, text=f"v{APP_VERSION}",
+             font=F_SMALL, fg="#334155",
+             bg=PALETTE["sidebar"]).pack(pady=10)
+
+def _switch_tab(self, tab_id):
+    for k, btn in self._nav_buttons.items():
+        if k == tab_id:
+            btn.config(fg="#FFFFFF", bg=PALETTE["sidebar_h"],
+                       font=(_FF, 10, "bold"))
+        else:
+            btn.config(fg="#94A3B8", bg=PALETTE["sidebar"],
+                       font=(_FF, 10))
+    # 탭 전환
+    for tid, frame in self._tab_frames.items():
+        frame.lift() if tid == tab_id else frame.lower()
+    self._active_tab = tab_id
+    # refresh 콜백
+    refresh = getattr(self, f"_refresh_{tab_id}", None)
+    if refresh: refresh()
+```
+
+---
+
+#### (D) 도움말 팝업 — `_HELP_DATA` 딕셔너리 방식
+
+community_poster의 각 탭 도움말 구조를 그대로 이식:
+
+```python
+_HELP_DATA = {
+    "templates": {
+        "title": "🗂️  작업 템플릿 – 사용 방법",
+        "steps": [
+            ("템플릿이란?",
+             "플랫폼(카카오/텔레그램) + 작업 유형 + 대상 CSV + 메시지 설정의 묶음.\n"
+             "한 번 만들어두면 작업 관리에서 반복 사용 가능."),
+            ("① 템플릿 추가",
+             "+ 버튼 클릭 → 플랫폼/작업유형 선택 → 저장."),
+            ("② 좌표 캡처",
+             "📸 캡처 버튼 클릭 → 3초 카운트다운 → 마우스 위치 자동 저장."),
+        ],
+        "tips": [
+            "💡 카카오 친구추가는 id_add_btn, status_dot, friend_add_btn 3개 좌표 필요.",
+            "💡 텔레그램은 v1.61부터 좌표 불필요 — Telethon API 사용.",
+        ]
+    },
+    "jobs": { ... },    # 기존 도움말 유지 + 스케줄 안내 강화
+    "log":  { ... },
+    "stats":{ ... },
+    "settings": { ... },
 }
 ```
 
-### 4-2. 변경 후 좌표 구조 (N세트)
+---
+
+#### (E) TreeView 행 스타일 — community_poster 방식
 
 ```python
-# 변경 후: 계정별 좌표 세트 리스트
-template = {
-    "multi_account": True,          # 멀티 계정 모드 활성화 여부
-    "account_mode": "zigzag",       # "zigzag" | "split" | "all"
-    "accounts": [
-        {
-            "name":       "계정1",
-            "profile_dir": "C:\\TelegramAccounts\\계정1",
-            "coords": {
-                "chrome_addr":   {"x": 100, "y": 50},
-                "join_btn":      {"x": 500, "y": 300},
-                "close_tab":     {"x": 800, "y": 30},
-                "message_input": {"x": 500, "y": 600},
-                "send_btn":      {"x": 750, "y": 600},
-            }
-        },
-        {
-            "name":       "계정2",
-            "profile_dir": "C:\\TelegramAccounts\\계정2",
-            "coords": {
-                "chrome_addr":   {"x": 1060, "y": 50},
-                "join_btn":      {"x": 1460, "y": 300},
-                "close_tab":     {"x": 1760, "y": 30},
-                "message_input": {"x": 1460, "y": 600},
-                "send_btn":      {"x": 1710, "y": 600},
-            }
-        },
-    ]
-}
+# 현행: 단순 bg/fg만
+# 변경: community_poster의 site_color 방식 참조
+
+tv.tag_configure("enabled",  background="#FFFFFF", foreground=PALETTE["text"])
+tv.tag_configure("disabled", background="#F8F9FA", foreground=PALETTE["muted"])
+tv.tag_configure("running",  background="#DBEAFE", foreground=PALETTE["primary"])
+tv.tag_configure("success",  background="#F0FDF4", foreground=PALETTE["success_text"])
+tv.tag_configure("failed",   background="#FEF2F2", foreground=PALETTE["danger"])
+
+# 카카오 작업 행: 노란 포인트
+tv.tag_configure("kakao",    background="#FEFCE8", foreground="#92400E")
+# 텔레그램 작업 행: 파란 포인트
+tv.tag_configure("telegram", background="#EFF6FF", foreground="#1D4ED8")
 ```
-
-### 4-3. 하위 호환성
-
-- `accounts` 키가 없으면 기존 단일 `coords` 구조로 동작 (v1.60과 동일)
-- 기존 저장된 JSON 작업 파일에 영향 없음
-- `_migrate_legacy_json()` 에 MIGRATE-11 항목 추가 예정
 
 ---
 
-## 5. WorkflowExecutor 변경 계획
+### 2-3. TemplateTab 레이아웃 개선
 
-### 5-1. 현재 실행 흐름
+**현행 문제:** 좌표 섹션 + 스케줄 섹션 + 딜레이 섹션이 길게 나열되어 가독성 저하
 
-```python
-def _run_telegram_message(self):
-    rows = self._read_targets()
-    for idx, row in enumerate(rows):
-        self._click("chrome_addr")    # ← 단일 coords 사용
-        self._type(link)
-        ...
+**변경:** 카드 단위 분리 + 접기/펼치기(Accordion) 지원
+
+```
+┌──────────────────────────────────────────┐
+│ 🗂️ 작업 템플릿                  [❓ 도움말] │
+├──────────┬───────────────────────────────┤
+│ [+ 추가] │  템플릿 편집                   │
+│ ──────── │  ┌─ 기본 설정 ──────────────┐ │
+│ 카카오친추│  │ 이름: [___________]      │ │
+│ 텔레그램  │  │ 플랫폼: [카카오▼]        │ │
+│ 오픈채팅  │  │ 작업:  [친구추가▼]       │ │
+│          │  └──────────────────────────┘ │
+│          │  ┌─ 대상 파일 ──────────────┐ │
+│          │  │ [파일 선택] 예시_카카오... │ │
+│          │  └──────────────────────────┘ │
+│          │  ┌─ 메시지 ─────────────────┐ │
+│          │  │ [텍스트 영역]             │ │
+│          │  └──────────────────────────┘ │
+│          │  ┌─ 좌표 설정 ▼ ──────────┐ │
+│          │  │ (카카오만 표시, 접기/펼치기)│ │
+│          │  └──────────────────────────┘ │
+│          │  ┌─ 딜레이 설정 ▼ ─────────┐ │
+│          │  │ (접기/펼치기)              │ │
+│          │  └──────────────────────────┘ │
+│          │  [💾 저장]  [🗑 삭제]          │
+└──────────┴───────────────────────────────┘
 ```
 
-### 5-2. 변경 후 실행 흐름
+---
+
+### 2-4. JobsTab 레이아웃 개선
+
+```
+┌────────────────────────────────────────────────────────┐
+│ 📋 작업 관리                             [❓ 도움말]    │
+├────────────────────────────────────────────────────────┤
+│ [+ 추가] [✎ 수정] [⧉ 복제] [✕ 삭제]  [▶ 선택실행] [▶▶ 전체실행] │
+├────────────────────────────────────────────────────────┤
+│ 이름 │ 플랫폼 │ 작업 │ 활성 │ 스케줄    │ 마지막 실행  │
+│ ──── │ ────── │ ──── │ ──── │ ────────  │ ──────────── │
+│ 작업1│ 🟡카카오│ 친추 │  ⊙  │ 🟢 09:00  │ 10분 전      │
+│ 작업2│ 🔵텔레그│ 메시지│ ⊙  │ ⚫ OFF    │ 1시간 전     │
+├────────────────────────────────────────────────────────┤
+│ ⏱ 예상 소요: 45분 (3개 작업)  🏁 예상 완료: 오후 3:25 [↻] │
+└────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. [스케줄 버그 수정] community_poster 방식 벤치마킹
+
+### 3-1. 현재 스케줄러 문제 목록
+
+#### 문제 1: `after()` 기반 단일 틱 — 잠재적 누락
+
+**현행 구조:**
+```python
+# JobsTab.__init__
+self.after(1_000, self._start_scheduler)
+
+def _start_scheduler(self):
+    self._stop_scheduler()
+    self._scheduler_running = True
+    self._scheduler_tick()   # 첫 틱 즉시
+
+def _scheduler_tick(self):
+    # ... 작업 루프 ...
+    self._scheduler_after_id = self.after(30_000, self._scheduler_tick)
+    # ↑ after()는 Tkinter 메인 스레드 의존
+    # UI가 무거운 작업(좌표 캡처, 대화상자 등) 중이면 30초 지연이 늘어남
+```
+
+**문제:** `after(30_000)` 은 메인 스레드(Tkinter event loop)에 예약되므로,  
+무거운 UI 작업 중엔 실제 30초보다 훨씬 늦게 실행될 수 있음.  
+→ `time` 모드에서 정각 트리거 실패 가능성.
+
+#### 문제 2: `_fired_set` 정리 조건 버그
 
 ```python
-def _run_telegram_message(self):
-    rows     = self._read_targets()
-    accounts = self._get_accounts()   # 계정 목록 반환
+# 현행 (BUG-05 수정 코드)
+self._fired_set = {k for k in self._fired_set
+                   if k.split("_")[-2] == today_str
+                   or len(k.split("_")) < 3}
+```
+키 형식: `"{job_name}_{YYYY-MM-DD}_{HH:MM}"`  
+작업 이름에 `_` 포함 시 `split("_")[-2]` 가 날짜가 아닌 이름 일부를 반환 → 오작동 가능.
 
-    if len(accounts) <= 1:
-        # 기존 단일 계정 로직 그대로 실행
-        self._run_telegram_message_single(rows, accounts[0])
+#### 문제 3: `interval` 모드 첫 실행 즉시 트리거
+
+```python
+if not last_raw:
+    fired = True   # 첫 실행 — 즉시
+```
+프로그램을 재시작할 때마다 interval 모드 작업이 즉시 실행됨.  
+`last_run`이 당일이면 skip 해야 하는데 무조건 실행.
+
+#### 문제 4: 자정 경계 처리 복잡성 과잉
+
+`BUG-N1` 수정 코드가 있지만 여전히 edge case 존재:  
+스케줄 `23:55`, 실행 직후 `00:01`로 넘어가면 `_key_date` 계산이 맞지 않음.
+
+#### 문제 5: 스케줄 저장 후 즉시 반영 안 됨
+
+작업 편집 후 스케줄 저장 시 `_restart_scheduler()` 호출하지만,  
+기존 `after()` 체인이 남아 있어 이전 설정으로 30초 더 실행 가능.
+
+---
+
+### 3-2. community_poster 방식 벤치마킹
+
+community_poster v5.20의 스케줄러는 **독립 스레드** 방식을 사용:
+
+```python
+# community_poster 방식
+def _start_job_scheduler(self, job):
+    stop_flag = threading.Event()
+    self._job_sched_threads[jname] = stop_flag
+
+    def _job_loop():
+        last_run = 0.0
+        while not stop_flag.is_set():
+            now  = datetime.now()
+            mode = jsched.get("mode", "interval")
+
+            if mode == "times":
+                for t in jsched.get("times", []):
+                    h2, m2 = map(int, t.split(":"))
+                    target = now.replace(hour=h2, minute=m2, second=0)
+                    if 0 <= (target - now).total_seconds() < 60:
+                        if (now.timestamp() - last_run) >= 50:
+                            last_run = now.timestamp()
+                            self.after(0, lambda j=job: self._execute(j))
+            elif mode == "interval":
+                if (now.timestamp() - last_run) >= interval_sec:
+                    last_run = now.timestamp()
+                    self.after(0, lambda j=job: self._execute(j))
+
+            stop_flag.wait(30)   # 30초 대기
+
+    t = threading.Thread(target=_job_loop, daemon=True)
+    t.start()
+```
+
+**핵심 차이:**
+- `after()` 체인 대신 **독립 데몬 스레드** → UI 블로킹과 완전히 분리
+- `stop_flag.wait(30)` → 스레드가 30초 대기 (UI 영향 없음)
+- `self.after(0, callback)` → 실행은 메인 스레드에서 안전하게
+
+---
+
+### 3-3. v1.61 스케줄러 수정 방안
+
+#### 수정 1: 스레드 기반으로 전환
+
+```python
+# messenger_allInOne_v1.61
+# 기존 after() 체인 완전 제거
+# community_poster 스타일 스레드로 교체
+
+def _start_scheduler(self):
+    if hasattr(self, '_sched_stop_flag'):
+        self._sched_stop_flag.set()  # 기존 스레드 중지
+
+    self._sched_stop_flag = threading.Event()
+    self._scheduler_running = True
+
+    def _sched_loop():
+        while not self._sched_stop_flag.is_set():
+            try:
+                self._check_and_fire_jobs()
+            except Exception as e:
+                self._log_error(f"[스케줄러 오류] {e}")
+            self._sched_stop_flag.wait(30)
+
+    t = threading.Thread(target=_sched_loop, daemon=True, name="scheduler")
+    t.start()
+    self._scheduler_thread = t
+```
+
+#### 수정 2: `_fired_set` 키 형식 변경 — 밑줄 문제 해결
+
+```python
+# 기존: f"{name}_{date}_{time}"  ← 이름에 _ 포함 시 파싱 오류
+# 변경: f"{hash(name)}|{date}|{time}"  ← 구분자를 | 로 변경
+
+fired_key = f"{abs(hash(name))}|{key_date}|{t}"
+
+# 정리 로직도 단순화
+self._fired_set = {k for k in self._fired_set
+                   if k.split("|")[1] == today_str}
+```
+
+#### 수정 3: interval 첫 실행 로직 개선
+
+```python
+# 기존: last_raw 없으면 즉시 실행
+# 변경: last_run_date가 오늘이면 skip
+
+if not last_raw:
+    # 최초 등록: 다음 interval 사이클까지 대기 (즉시 실행 안 함)
+    fired = False
+elif last_run_date == today_str and elapsed_h < interval:
+    fired = False
+else:
+    fired = elapsed_h >= interval
+```
+
+#### 수정 4: 스케줄 저장 즉시 반영
+
+```python
+def _save_job(self):
+    # ... 저장 로직 ...
+    save_json(path, data)
+    self._restart_scheduler()   # 기존 스레드 중지 + 새 스레드 시작
+
+def _restart_scheduler(self):
+    self._stop_scheduler()       # stop_flag.set() → 스레드 자연 종료
+    time.sleep(0.1)              # 스레드 종료 대기
+    self._start_scheduler()      # 새 스레드 시작
+```
+
+#### 수정 5: 스케줄 상태 표시 연동 (헤더)
+
+```python
+def _update_schedule_header(self):
+    """헤더의 스케줄 상태 레이블 갱신"""
+    if not self._scheduler_running:
+        self.app._sched_var.set("스케줄 OFF")
         return
 
-    mode = self.tmpl.get("account_mode", "zigzag")  # 기본값: zigzag
-
-    if mode == "zigzag":
-        # 링크 1개씩 계정을 번갈아 처리
-        for idx, row in enumerate(rows):
-            account = accounts[idx % len(accounts)]   # 순환 인덱스
-            self._activate_chrome(account)
-            self.coords = account["coords"]
-            self._run_telegram_message_single([row], account)
-
-    elif mode == "split":
-        # 링크 목록을 계정별로 균등 분배
-        chunks = self._split_rows(rows, len(accounts))
-        for account, chunk in zip(accounts, chunks):
-            self._activate_chrome(account)
-            self.coords = account["coords"]
-            self._run_telegram_message_single(chunk, account)
-
-    elif mode == "all":
-        # 모든 계정이 전체 링크 처리
-        for account in accounts:
-            self._activate_chrome(account)
-            self.coords = account["coords"]
-            self._run_telegram_message_single(rows, account)
-
-def _activate_chrome(self, account: dict):
-    """해당 계정의 크롬 창을 포그라운드로 가져옴"""
-    addr = account["coords"].get("chrome_addr", {})
-    x, y = addr.get("x", 0), addr.get("y", 0)
-    if x and y:
-        pyautogui.click(x, y)
-        time.sleep(safe_float(self.tmpl.get("account_switch_delay", 1.0)))
-
-def _split_rows(self, rows: list, n: int) -> list[list]:
-    """rows를 n개로 균등 분배"""
-    chunk_size = math.ceil(len(rows) / n)
-    return [rows[i:i+chunk_size] for i in range(0, len(rows), chunk_size)]
+    active_count = sum(1 for j in self._jobs
+                       if j.get("schedule_on") and j.get("enabled", True))
+    if active_count:
+        self.app._sched_var.set(f"🟢 스케줄 {active_count}개")
+    else:
+        self.app._sched_var.set("🟡 스케줄 ON (대기)")
 ```
 
 ---
 
-## 6. UI 변경 계획 (TemplateTab)
+### 3-4. 스케줄 UI 개선
 
-### 6-1. 싱글 계정 / 멀티 계정 전환 토글
+**현행 문제:** 스케줄 설정이 JobDialog 안에 숨어 있어 한눈에 보기 어려움
 
-```
-[ 단일 계정 ] ←→ [ 멀티 계정 ]    (라디오 버튼 또는 체크박스)
-```
-
-- 단일 계정: 현재 v1.60과 동일한 좌표 섹션 표시
-- 멀티 계정: 계정 목록 + 계정별 좌표 섹션 표시
-
-### 6-2. 멀티 계정 UI 구성
+**변경:** JobsTab 하단에 **스케줄 상태 패널** 추가 (community_poster 방식)
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ 멀티 계정 설정                          [+ 계정 추가] │
-├─────────────────────────────────────────────────────┤
-│ 실행 모드:  ● 지그재그 (Zigzag)  ○ 분배 (Split)  ○ 반복 (All) │
-├─────────────────────────────────────────────────────┤
-│ [계정1 ▼]  프로필 경로: C:\TelegramAccounts\계정1    │
-│            [크롬 열기]  [좌표 캡처]  [삭제]           │
-│                                                      │
-│   chrome_addr  x:[____] y:[____]  [📸 캡처]          │
-│   join_btn     x:[____] y:[____]  [📸 캡처]          │
-│   close_tab    x:[____] y:[____]  [📸 캡처]          │
-│   message_input x:[___] y:[____]  [📸 캡처]          │
-│   send_btn     x:[____] y:[____]  [📸 캡처]          │
-├─────────────────────────────────────────────────────┤
-│ [계정2 ▼]  프로필 경로: C:\TelegramAccounts\계정2    │
-│            [크롬 열기]  [좌표 캡처]  [삭제]           │
-│   ...                                                │
-└─────────────────────────────────────────────────────┘
-```
-
-### 6-3. "크롬 열기" 버튼 동작
-
-버튼 클릭 시 해당 계정 프로필 폴더로 크롬 실행:
-
-```python
-def _open_chrome(self, profile_dir: str):
-    import subprocess
-    chrome_paths = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    ]
-    for path in chrome_paths:
-        if Path(path).exists():
-            subprocess.Popen([
-                path,
-                f"--user-data-dir={profile_dir}",
-                "--new-window",
-                "https://web.telegram.org"
-            ])
-            return
-    messagebox.showerror("오류", "크롬 경로를 찾을 수 없습니다.")
-```
-
-### 6-4. 기본 프로필 경로 자동 설정
-
-- 기본값: 프로그램 실행 파일 옆에 `TelegramAccounts\계정N` 폴더 자동 생성
-- 사용자가 직접 경로 변경 가능
-
----
-
-## 7. 데이터 스키마 변경
-
-### 7-1. 템플릿 JSON 변경
-
-```json
-{
-  "name": "텔레그램 메시지 템플릿",
-  "workflow": "telegram_message",
-  "multi_account": true,
-  "account_mode": "zigzag",
-  "accounts": [
-    {
-      "name": "계정1",
-      "profile_dir": "C:\\TelegramAccounts\\계정1",
-      "coords": {
-        "chrome_addr":   {"x": 100, "y": 50},
-        "message_input": {"x": 500, "y": 600},
-        "send_btn":      {"x": 750, "y": 600}
-      }
-    },
-    {
-      "name": "계정2",
-      "profile_dir": "C:\\TelegramAccounts\\계정2",
-      "coords": {
-        "chrome_addr":   {"x": 1060, "y": 50},
-        "message_input": {"x": 1460, "y": 600},
-        "send_btn":      {"x": 1710, "y": 600}
-      }
-    }
-  ],
-  "message": "안녕하세요! {이름}님",
-  "tg_chrome_load": 2.0,
-  "tg_between_min": 20.0,
-  "tg_between_max": 30.0
-}
-```
-
-### 7-2. 마이그레이션 (MIGRATE-11)
-
-기존 단일 계정 템플릿을 멀티 계정 구조로 자동 변환:
-
-```python
-# MIGRATE-11: 단일 coords → accounts[0] 래핑
-if "coords" in d and "accounts" not in d:
-    d["accounts"] = [{
-        "name": "계정1",
-        "profile_dir": "",
-        "coords": d.pop("coords")
-    }]
-    d["multi_account"] = False
-    d["account_mode"] = "split"
+┌─────────────────────────────────────────────────┐
+│ 🕐 스케줄 상태                                   │
+├─────────────────────────────────────────────────┤
+│ 스케줄러: 🟢 실행 중   활성 작업: 3개            │
+│                                                  │
+│ 작업1  time 모드  09:00, 14:00  🟢 다음: 14:00  │
+│ 작업2  interval  매 3시간       🟡 다음: 2시간 후│
+│ 작업3  time 모드  21:00         ⚫ 비활성         │
+│                                                  │
+│ [▶ 스케줄러 시작]  [■ 스케줄러 중지]             │
+└─────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 8. ETA 패널 연동
+## 4. 상세 벤치마킹 항목 정리
 
-v1.60에서 추가된 ETA(예상 완료 시간) 패널을 멀티 계정에 맞게 확장한다.
+community_poster v5.20에서 messenger_allInOne v1.61에 적용할 항목 전체 목록:
 
-### 현재 ETA 계산
+### UI 컴포넌트
 
-```
-예상 시간 = 링크 수 × 워크플로우 기본 소요시간
-```
+| # | 벤치마킹 항목 | 위치 | 우선순위 |
+|---|---|---|---|
+| UI-01 | `_card()` 메서드 — border+padding 카드 컨테이너 | App 클래스 | 🔴 필수 |
+| UI-02 | `_button()` 메서드 — hover 내장 버튼 | App 클래스 | 🔴 필수 |
+| UI-03 | `_darken()` 메서드 — hover 색상 계산 | App 클래스 | 🔴 필수 |
+| UI-04 | `_label()` 메서드 — 중앙화 레이블 | App 클래스 | 🟡 권장 |
+| UI-05 | `_badge()` 메서드 — 색상 뱃지 | App 클래스 | 🟡 권장 |
+| UI-06 | `_separator()` 메서드 — 구분선 | App 클래스 | 🟡 권장 |
+| UI-07 | 사이드바 `tk.Button` 전환 + `sidebar_h` 배경 | App._build_sidebar | 🔴 필수 |
+| UI-08 | `_switch_tab()` — font bold + fg white + bg sidebar_h | App._switch_tab | 🔴 필수 |
+| UI-09 | 헤더 우측 `_queue_var` + `_sched_var` 실시간 레이블 | App._build_header | 🔴 필수 |
+| UI-10 | `_HELP_DATA` 딕셔너리 + `_show_help()` 팝업 | 각 탭 | 🟡 권장 |
+| UI-11 | Treeview 행 태그 컬러링 (platform별 배경색) | JobsTab | 🟡 권장 |
+| UI-12 | 스케줄 상태 아이콘: 🟢/🟡/⚫/⚪ 패턴 | JobsTab | 🔴 필수 |
+| UI-13 | `_resolve_job_account()` — 이름→객체 해석 | JobsTab | 🟡 권장 |
+| UI-14 | 딜레이 표시 "전역 설정" / "N~Msec" | JobsTab | 🟢 선택 |
 
-### v1.61 ETA 계산
+### 스케줄러
 
-```
-[지그재그 모드]
-예상 시간 = 링크 수 × 워크플로우 기본 소요시간
-(계정 전환 딜레이 × 링크 수 추가 반영)
+| # | 벤치마킹 항목 | 위치 | 우선순위 |
+|---|---|---|---|
+| SC-01 | 독립 데몬 스레드 기반 스케줄러 | JobsTab | 🔴 필수 |
+| SC-02 | `stop_flag = threading.Event()` 패턴 | JobsTab | 🔴 필수 |
+| SC-03 | `_job_sched_threads` dict 관리 | JobsTab | 🔴 필수 |
+| SC-04 | `_restore_scheduler_on_startup()` | JobsTab | 🔴 필수 |
+| SC-05 | `_sync_scheduler()` — 작업 변경 후 동기화 | JobsTab | 🔴 필수 |
+| SC-06 | 50초 중복 가드 — `last_run` 기반 | 스케줄 루프 | 🔴 필수 |
+| SC-07 | 스케줄 저장 즉시 재시작 | `_save_job()` | 🔴 필수 |
+| SC-08 | `_fired_set` 키 구분자 `|` 변경 | 스케줄 루프 | 🔴 필수 |
 
-[분배 모드]
-예상 시간 = (링크 수 ÷ 계정 수) × 워크플로우 기본 소요시간
+### 데이터 구조
 
-[반복 모드]
-예상 시간 = 링크 수 × 계정 수 × 워크플로우 기본 소요시간
-```
-
-ETA 패널 표시 예시 (지그재그 모드, 계정 3개, 링크 100개):
-
-```
-┌─────────────────────────────────────┐
-│ 전체 예상: 약 50분  [지그재그 모드]  │
-│ 완료 예상: 오후 3:25                 │
-│                                      │
-│ 계정A: 34번 처리 완료 (34/34 담당)   │
-│ 계정B: 처리 중 (32/33 담당)          │
-│ 계정C: 대기 중 (0/33 담당)           │
-│                                      │
-│ 전체 진행: 66/100                    │
-│ [새로고침]                            │
-└─────────────────────────────────────┘
-```
-
----
-
-## 9. 로그 출력 변경
-
-멀티 계정 실행 시 로그에 계정명 prefix 추가:
-
-**지그재그 모드 로그 예시:**
-```
-[지그재그] 총 100개 링크 / 계정 3개
-[계정A] [1/100] https://t.me/channel_a
-[계정A]   ✅ 발송 완료
-[계정B] [2/100] https://t.me/channel_b
-[계정B]   ✅ 발송 완료
-[계정C] [3/100] https://t.me/channel_c
-[계정C]   ✅ 발송 완료
-[계정A] [4/100] https://t.me/channel_d
-[계정A]   ✅ 발송 완료
-...
-```
-
-**분배 모드 로그 예시:**
-```
-[분배] 계정A: 1~34번 / 계정B: 35~67번 / 계정C: 68~100번
-[계정A] [1/34] https://t.me/channel_a
-[계정A]   ✅ 발송 완료
-...
-[계정B] [35/33] https://t.me/channel_x  (계정A 완료 후)
-...
-```
+| # | 벤치마킹 항목 | 위치 | 우선순위 |
+|---|---|---|---|
+| DS-01 | 스케줄 설정을 `schedule` 서브딕셔너리로 분리 | Job JSON | 🟡 권장 |
+| DS-02 | `use_global` 플래그 — 전역/개별 스케줄 구분 | schedule dict | 🟡 권장 |
+| DS-03 | `interval_variance` 분 단위 (현재 시간 단위) | schedule dict | 🟢 선택 |
 
 ---
 
-## 10. 버전 및 파일 변경 사항
+## 5. 구현 순서 (개발 단계)
 
-### APP_VERSION
+### Phase 1. 스케줄러 수정 (SC-01 ~ SC-08) 🔴 최우선
 
-```python
-APP_VERSION = "1.61"
-```
+- [ ] `_start_scheduler()` 스레드 방식으로 교체
+- [ ] `_stop_scheduler()` `stop_flag.set()` 방식으로 교체
+- [ ] `_restart_scheduler()` 원자적 재시작
+- [ ] `_fired_set` 키 형식 `|` 구분자로 변경
+- [ ] interval 첫 실행 로직 수정 (즉시 실행 방지)
+- [ ] `_restore_scheduler_on_startup()` 이식
+- [ ] `_sync_scheduler()` 이식
+- [ ] 스케줄 저장 즉시 반영
 
-### 변경 파일
+### Phase 2. App 스타일 헬퍼 추가 (UI-01 ~ UI-06) 🔴
+
+- [ ] `_card()`, `_button()`, `_darken()` 추가
+- [ ] `_label()`, `_badge()`, `_separator()` 추가
+- [ ] 기존 직접 `tk.Button()` 호출을 `_button()` 헬퍼로 점진적 교체
+
+### Phase 3. 헤더 + 사이드바 개선 (UI-07 ~ UI-09) 🔴
+
+- [ ] 사이드바 `tk.Label` → `tk.Button` 전환
+- [ ] `_switch_tab()` — bold/fg/bg 3중 변경
+- [ ] 헤더 우측 `_queue_var` + `_sched_var` 추가
+- [ ] 스케줄 상태 헤더 갱신 함수 연동
+
+### Phase 4. JobsTab 개선 (UI-11 ~ UI-14) 🟡
+
+- [ ] Treeview 태그 컬러링 (platform별)
+- [ ] 스케줄 상태 아이콘 🟢/🟡/⚫/⚪ 통합
+- [ ] 스케줄 상태 패널 추가 (하단)
+- [ ] ETA 패널 — 멀티계정 Telethon 방식에 맞게 수정
+
+### Phase 5. Telethon 엔진 통합 🔴
+
+- [ ] `TelethonEngine` 클래스 신규 작성
+- [ ] 계정별 세션 파일 관리
+- [ ] `join_group()`, `send_message()` 비동기 구현
+- [ ] 15계정 동시 스레드 실행
+- [ ] 제재 탐지 (`FloodWaitError`, `PeerFloodError` 등) 처리
+- [ ] 계정 상태 모니터 UI (상태 다이얼로그 또는 탭)
+- [ ] 기존 `_run_telegram_join`, `_run_telegram_message` 라우팅 교체
+
+### Phase 6. TemplateTab 리디자인 🟡
+
+- [ ] 카드 단위 섹션 분리
+- [ ] 접기/펼치기 Accordion UI
+- [ ] 텔레그램 워크플로우: 좌표 섹션 → Telethon 계정 선택으로 교체
+- [ ] 카카오 워크플로우: 좌표 섹션 기존 유지
+
+### Phase 7. 도움말 팝업 (UI-10) 🟡
+
+- [ ] `_HELP_DATA` 딕셔너리 정의 (모든 탭)
+- [ ] `_show_help(tab_id)` 팝업 메서드 구현
+- [ ] 각 탭 헤더에 `[❓ 도움말]` 버튼 추가
+
+### Phase 8. 테스트 및 빌드
+
+- [ ] 스케줄러 단위 테스트 (time 모드 / interval 모드 / 재시작 후 복원)
+- [ ] Telethon 연결 테스트 (FloodWait 시뮬레이션 포함)
+- [ ] 카카오 기존 기능 회귀 테스트
+- [ ] PyInstaller 빌드 (`messenger_v161.spec`)
+- [ ] `version.json` 업데이트 (1.61)
+- [ ] GitHub 푸시
+
+---
+
+## 6. 파일 변경 사항
 
 | 파일 | 변경 내용 |
 |---|---|
-| `messenger_allInOne_v1.60.py` → `messenger_allInOne_v1.61.py` | 전체 변경사항 적용 |
+| `messenger_allInOne_v1.60.py` → `messenger_allInOne_v1.61.py` | 전체 변경 적용 |
 | `messenger_v160.spec` → `messenger_v161.spec` | 파일명 업데이트 |
-| `version.json` | 버전 1.61 반영 |
+| `version.json` | `"version": "1.61"` |
 
-### PyInstaller spec 변경
+---
+
+## 7. 버전 상수 변경
 
 ```python
-# messenger_v161.spec
-a = Analysis(
-    ['messenger_allInOne_v1.61.py'],
-    ...
-)
-exe = EXE(
-    pyz,
-    name="메신저올인원",
-    ...
-)
+APP_VERSION = "1.61"
+APP_TITLE   = f"메신저 올인원 v{APP_VERSION}"
 ```
 
 ---
 
-## 11. 구현 순서 (개발 단계)
-
-### Phase 1. 데이터 구조 변경
-- [ ] `PLATFORMS` 딕셔너리에 `multi_account` 관련 키 추가
-- [ ] 템플릿 JSON 스키마 확장 (`accounts` 배열)
-- [ ] `_migrate_legacy_json()` MIGRATE-11 추가
-
-### Phase 2. WorkflowExecutor 변경
-- [ ] `_get_accounts()` 메서드 추가 (단일/멀티 계정 통합 반환)
-- [ ] `_activate_chrome()` 메서드 추가 (크롬 창 전환)
-- [ ] `_split_rows()` 메서드 추가 (링크 균등 분배)
-- [ ] `_zigzag_run()` 메서드 추가 (링크 단위 계정 순환)
-- [ ] `_run_telegram_join()` 멀티 계정 분기 처리 (zigzag/split/all)
-- [ ] `_run_telegram_message()` 멀티 계정 분기 처리 (zigzag/split/all)
-
-### Phase 3. TemplateTab UI 변경
-- [ ] 단일/멀티 계정 전환 토글 추가
-- [ ] 계정 목록 UI 구성 (추가/삭제/순서 변경)
-- [ ] 계정별 좌표 캡처 섹션 (접기/펼치기 지원)
-- [ ] "크롬 열기" 버튼 구현
-- [ ] 프로필 기본 경로 자동 설정
-- [ ] 실행 모드 선택 (지그재그/분배/반복), 기본값 지그재그
-
-### Phase 4. ETA 패널 연동
-- [ ] 멀티 계정 ETA 계산 로직 수정
-- [ ] 계정별 진행상황 표시
-
-### Phase 5. 로그 연동
-- [ ] 계정명 prefix 로그 출력
-
-### Phase 6. 테스트 및 빌드
-- [ ] 단일 계정 하위 호환 테스트
-- [ ] 2계정 지그재그 모드 테스트
-- [ ] 2계정 분배 모드 테스트
-- [ ] 2계정 반복 모드 테스트
-- [ ] 3계정 지그재그 모드 테스트 (홀수 링크 수 포함)
-- [ ] PyInstaller 빌드 (`messenger_v161.spec`)
-- [ ] `version.json` 업데이트
-- [ ] GitHub 푸시 → Actions 자동 빌드
-
----
-
-## 12. 주의사항 및 제약
-
-### 좌표 기반 방식의 특성
-- 계정별 크롬 창 위치가 달라야 좌표가 겹치지 않음
-- 사용자가 창 배치 후 각 계정 좌표를 직접 캡처해야 함
-- 실행 중 창 이동 시 오작동 가능 → 실행 중 창 이동 금지 안내 메시지 추가 필요
-
-### 크롬 경로
-- 크롬 설치 경로가 다를 수 있으므로 다중 경로 탐색 로직 필요
-- 크롬 미설치 시 안내 메시지 표시
-
-### web.telegram.org 특성
-- 링크 입력 후 web.telegram.org 내에서 채널/그룹 페이지가 열리는 방식
-- 현재 t.me 링크를 크롬 주소창에 입력하면 web.telegram.org로 리다이렉트되는 구조 활용 가능
-- 단, web UI의 버튼 위치가 텔레그램 앱과 다를 수 있으므로 좌표 재캡처 필요
-
-### 딜레이 설정
-- 멀티 계정이라도 순차 실행이므로 계정 전환 시 추가 딜레이 필요
-- `account_switch_delay` 파라미터 추가 예정 (기본값: 1.0s)
-
----
-
-## 13. 향후 고려 사항 (v1.62+)
+## 8. 향후 v1.62+ 고려 사항
 
 - 계정별 발송 통계 분리 (StatsTab)
-- 계정별 실패 재시도 로직
-- 크롬 창 자동 배치 기능 (화면 분할)
-- 계정별 딜레이 개별 설정
-- 지그재그 모드에서 특정 계정 일시 중지/재개 기능
-- 지그재그 가중치 설정 (예: 계정A는 2번에 1번, 계정B는 1번에 1번)
+- Telethon 자동 재연결 로직 (네트워크 끊김 대응)
+- 채널 블랙리스트 영구 저장 및 UI 관리
+- 계정별 워밍업 자동 스케줄 (신규 계정 50→100→200→500)
+- 카카오 오픈채팅 멀티계정 지원 (별도 분석 필요)
+- 전체 발송 현황 대시보드 탭 추가
