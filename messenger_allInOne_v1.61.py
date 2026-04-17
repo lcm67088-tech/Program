@@ -1932,11 +1932,22 @@ def safe_float(val: Any, default: float = 0.0) -> float:
     except: return default
 
 def _lighten(hex_color: str, factor: float = 0.15) -> str:
+    """hex 색상을 밝게(factor>0) 또는 어둡게(factor<0) 조정. 결과는 항상 유효한 색상."""
     h = hex_color.lstrip("#")
-    r,g,b = tuple(int(h[i:i+2],16) for i in (0,2,4))
-    r = min(255, int(r+(255-r)*factor))
-    g = min(255, int(g+(255-g)*factor))
-    b = min(255, int(b+(255-b)*factor))
+    if len(h) != 6:
+        return hex_color
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    if factor >= 0:
+        # 밝게: 흰색 방향으로 블렌드
+        r = min(255, int(r + (255 - r) * factor))
+        g = min(255, int(g + (255 - g) * factor))
+        b = min(255, int(b + (255 - b) * factor))
+    else:
+        # 어둡게: 검정 방향으로 블렌드 (|factor| 비율)
+        d = abs(factor)
+        r = max(0, int(r * (1 - d)))
+        g = max(0, int(g * (1 - d)))
+        b = max(0, int(b * (1 - d)))
     return f"#{r:02x}{g:02x}{b:02x}"
 
 def _find_tesseract() -> str | None:
