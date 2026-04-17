@@ -1765,9 +1765,13 @@ PLATFORM_WORKFLOWS = {
         "needs_ocr":    False,
         "needs_message":False,
         "needs_image":  False,
+        # Telethon 있으면 API 방식, 없으면 pyautogui(크롬) 방식 폴백
+        "needs_telethon": False,   # 없어도 동작 (pyautogui 폴백)
+        "telethon_preferred": True,  # Telethon 권장
         "coord_keys":   ["chrome_addr", "join_btn", "close_tab"],
         "coord_labels": ["🌐 크롬 주소창", "✅ 가입 버튼", "❌ 탭 닫기"],
         "coord_types":  ["point", "point", "point"],
+        "coord_note":   "Telethon 계정 설정 시 좌표 불필요 (API 방식 사용)",
     },
     "telegram_message": {
         "name":         "메시지 발송",
@@ -1775,9 +1779,12 @@ PLATFORM_WORKFLOWS = {
         "needs_ocr":    False,
         "needs_message":True,
         "needs_image":  True,   # 이미지 첨부 지원
+        "needs_telethon": False,   # 없어도 동작 (pyautogui 폴백)
+        "telethon_preferred": True,  # Telethon 권장
         "coord_keys":   ["chrome_addr", "message_input", "send_btn"],
         "coord_labels": ["🌐 크롬 주소창", "✏️ 메시지 입력창", "📤 전송 버튼"],
         "coord_types":  ["point", "point", "point"],
+        "coord_note":   "Telethon 계정 설정 시 좌표 불필요 (API 방식 사용)",
     },
 }
 
@@ -3752,6 +3759,52 @@ class TemplateTab(tk.Frame):
         types  = wdef.get("coord_types",  [])
         saved  = self._cur("coords", {})
 
+        # ── Telethon 권장 워크플로우: 설치 여부에 따라 안내 배너 표시 ──
+        if wdef.get("telethon_preferred"):
+            if HAS_TELETHON:
+                tg_accounts = load_json(TG_ACCOUNTS_PATH, [])
+                if tg_accounts:
+                    # Telethon 설치 + 계정 있음 → 좌표 불필요 안내
+                    banner = tk.Frame(self._coord_section_wrap,
+                                      bg="#D1FAE5",
+                                      highlightbackground="#6EE7B7",
+                                      highlightthickness=1)
+                    banner.pack(fill=tk.X, pady=(0, 8))
+                    tk.Label(banner,
+                             text="✅  Telethon API 모드로 실행됩니다. "
+                                  "아래 좌표 설정은 사용되지 않습니다.",
+                             font=F_SMALL, bg="#D1FAE5",
+                             fg="#065F46", padx=10, pady=6
+                             ).pack(anchor="w")
+                    return   # 좌표 섹션 렌더 불필요
+                else:
+                    # Telethon 설치됐지만 계정 없음
+                    banner = tk.Frame(self._coord_section_wrap,
+                                      bg="#FEF9C3",
+                                      highlightbackground="#FDE047",
+                                      highlightthickness=1)
+                    banner.pack(fill=tk.X, pady=(0, 8))
+                    tk.Label(banner,
+                             text="⚠️  Telethon 설치됨 — 텔레그램 계정 탭에서 계정을 추가하면\n"
+                                  "    API 방식으로 자동 전환되어 아래 좌표가 필요 없어집니다.",
+                             font=F_SMALL, bg="#FEF9C3",
+                             fg="#713F12", padx=10, pady=6, justify="left"
+                             ).pack(anchor="w")
+            else:
+                # Telethon 미설치 → pyautogui 폴백 안내
+                banner = tk.Frame(self._coord_section_wrap,
+                                  bg="#FEF3C7",
+                                  highlightbackground="#FCD34D",
+                                  highlightthickness=1)
+                banner.pack(fill=tk.X, pady=(0, 8))
+                tk.Label(banner,
+                         text="ℹ️  현재 pyautogui(크롬 자동화) 모드입니다.\n"
+                              "    pip install telethon 설치 후 계정 추가 시\n"
+                              "    API 방식으로 전환되어 더 안정적으로 동작합니다.",
+                         font=F_SMALL, bg="#FEF3C7",
+                         fg="#92400E", padx=10, pady=6, justify="left"
+                         ).pack(anchor="w")
+
         tk.Label(self._coord_section_wrap,
                  text="🖱️ 좌표 설정",
                  font=F_HEAD,
@@ -4214,6 +4267,36 @@ class TemplateTab(tk.Frame):
                 ("최대(s)", self._tg_between_max),
             ]:
                 _field(r3, lbl_t, var)
+
+            # 행4: Telethon 다계정 모드 (Telethon 설치 시만 의미 있음)
+            r4 = _row(card)
+            tk.Label(r4, text="계정 분배 모드", width=14, anchor=tk.W,
+                     font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                     ).pack(side=tk.LEFT)
+            self._account_mode_var = tk.StringVar(
+                value=self._cur("account_mode", "zigzag"))
+            for mode_val, mode_lbl in [
+                ("zigzag", "순환"),
+                ("split",  "균등분배"),
+                ("all",    "전체"),
+            ]:
+                tk.Radiobutton(
+                    r4, text=mode_lbl,
+                    variable=self._account_mode_var, value=mode_val,
+                    font=F_LABEL, bg=PALETTE["card"],
+                    fg=PALETTE["text"],
+                    selectcolor=PALETTE["card2"],
+                    activebackground=PALETTE["card"]
+                ).pack(side=tk.LEFT, padx=(0, 8))
+
+            r5 = _row(card)
+            tk.Label(r5, text="계정 전환 딜레이", width=14, anchor=tk.W,
+                     font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                     ).pack(side=tk.LEFT)
+            self._account_sw_delay = tk.StringVar(
+                value=str(self._cur("account_switch_delay", 1.0)))
+            _field(r5, "전환(s)", self._account_sw_delay)
+
             tk.Frame(card, bg=PALETTE["card"], height=4).pack()
 
     # ── 그리드 좌표 자동 계산 섹션 ──────────────────────────
@@ -5070,6 +5153,12 @@ class TemplateTab(tk.Frame):
                 data["tg_after_back"]    = safe_float(self._tg_after_back.get(),    0.8)
                 data["tg_between_min"]   = safe_float(self._tg_between_min.get(),   3.0)
                 data["tg_between_max"]   = safe_float(self._tg_between_max.get(),   7.0)
+            # ▶ Telethon 다계정 모드 저장
+            if hasattr(self, "_account_mode_var"):
+                data["account_mode"] = self._account_mode_var.get()
+            if hasattr(self, "_account_sw_delay"):
+                data["account_switch_delay"] = safe_float(
+                    self._account_sw_delay.get(), 1.0)
             # ▶ 텔레그램 전송/닫기 방식 저장 (메시지 계열)
             if wk == "telegram_message":
                 if hasattr(self, "_send_method_var"):
@@ -7220,6 +7309,14 @@ class WorkflowExecutor:
             if tg_accounts:
                 self._run_telegram_join_telethon(tg_accounts)
                 return
+            else:
+                self._log("[TG] Telethon 설치됨 — 계정 없음 → pyautogui 폴백 실행\n"
+                          "     텔레그램 계정 탭에서 계정을 추가하면 API 방식으로 자동 전환됩니다.",
+                          "WARN")
+        else:
+            self._log("[TG] Telethon 미설치 → pyautogui(크롬 자동화) 방식으로 실행\n"
+                      "     pip install telethon 으로 설치하면 더 안정적인 API 방식을 사용할 수 있습니다.",
+                      "INFO")
 
         # ── 폴백: 기존 pyautogui 방식 ─────────────────────────
         if not HAS_PYAUTOGUI:
@@ -7426,6 +7523,14 @@ class WorkflowExecutor:
             if tg_accounts:
                 self._run_telegram_message_telethon(tg_accounts)
                 return
+            else:
+                self._log("[TG] Telethon 설치됨 — 계정 없음 → pyautogui 폴백 실행\n"
+                          "     텔레그램 계정 탭에서 계정을 추가하면 API 방식으로 자동 전환됩니다.",
+                          "WARN")
+        else:
+            self._log("[TG] Telethon 미설치 → pyautogui(크롬 자동화) 방식으로 실행\n"
+                      "     pip install telethon 으로 설치하면 더 안정적인 API 방식을 사용할 수 있습니다.",
+                      "INFO")
 
         # ── 폴백: 기존 pyautogui 방식 ─────────────────────────
         if not HAS_PYAUTOGUI:
@@ -9001,8 +9106,16 @@ class TelethonEngine:
         self._threads[phone] = t
 
     # ── 공개 API ───────────────────────────────────────────
-    def connect(self, acct: dict) -> bool:
-        """계정 연결 (이미 연결됐으면 True 반환)"""
+    def connect(self, acct: dict,
+                otp_callback=None, password_callback=None) -> bool:
+        """계정 연결.
+        세션 파일이 있으면 자동 로그인.
+        없으면 otp_callback(phone) → 코드 문자열 반환 필요.
+        2FA 설정 계정은 password_callback(phone) → 비번 문자열 반환 필요.
+
+        otp_callback / password_callback 이 None 이면 백그라운드 자동실행
+        (배치 작업) 중에는 세션 없는 계정을 건너뜀.
+        """
         import asyncio
         phone = str(acct.get("phone", ""))
         try:
@@ -9012,15 +9125,41 @@ class TelethonEngine:
             async def _do_connect():
                 if not client.is_connected():
                     await client.connect()
-                return await client.is_user_authorized()
+                if await client.is_user_authorized():
+                    return "ok"
+                # 세션 없음 — OTP 필요
+                if otp_callback is None:
+                    return "need_otp"
+                # OTP 발송 요청
+                await client.send_code_request(phone)
+                code = otp_callback(phone)
+                if not code:
+                    return "cancelled"
+                try:
+                    await client.sign_in(phone, code)
+                except _tl_errors.SessionPasswordNeededError:
+                    # 2FA 비밀번호 필요
+                    if password_callback is None:
+                        return "need_2fa"
+                    pw = password_callback(phone)
+                    if not pw:
+                        return "cancelled"
+                    await client.sign_in(password=pw)
+                return "ok"
 
-            authorized = self._run_in_loop(loop, _do_connect())
-            if authorized:
-                self._log_fn(f"[TG:{phone}] ✅ 연결 성공", "SUCCESS")
+            result = self._run_in_loop(loop, _do_connect())
+            if result == "ok":
+                self._log_fn(f"[TG:{phone}] ✅ 연결·인증 완료", "SUCCESS")
                 self._status[phone] = self.ST_IDLE
                 return True
-            else:
-                self._log_fn(f"[TG:{phone}] ⚠️ 미인증 — OTP 필요", "WARN")
+            elif result == "need_otp":
+                self._log_fn(f"[TG:{phone}] ⚠️ 세션 없음 — 연결 테스트 탭에서 OTP 인증 필요", "WARN")
+                return False
+            elif result == "need_2fa":
+                self._log_fn(f"[TG:{phone}] ⚠️ 2FA 비밀번호 필요 — 연결 테스트에서 입력하세요", "WARN")
+                return False
+            else:  # cancelled
+                self._log_fn(f"[TG:{phone}] ⚠️ 인증 취소됨", "WARN")
                 return False
         except Exception as e:
             self._log_fn(f"[TG:{phone}] ❌ 연결 실패: {e}", "ERROR")
@@ -9762,28 +9901,185 @@ class TelegramAccountsTab(tk.Frame):
         messagebox.showinfo("저장 완료", f"계정 '{data['name']}' 저장 완료.")
 
     def _test_connect(self):
-        """연결 테스트 — 별도 스레드에서 실행"""
+        """연결 테스트 — OTP / 2FA 인증 다이얼로그 포함"""
         if self._sel_idx < 0:
             messagebox.showwarning("선택 없음", "테스트할 계정을 선택하세요.")
             return
-        acct = self._accounts[self._sel_idx]
+        # 전역 API 설정 확인
+        _cfg = load_json(CONFIG_PATH, {})
+        if not _cfg.get("tg_api", {}).get("api_id"):
+            messagebox.showwarning("API 미설정",
+                                   "상단 API 인증 정보를 먼저 저장하세요.")
+            return
+
+        acct  = self._accounts[self._sel_idx]
         phone = str(acct.get("phone", ""))
 
+        # ── OTP / 2FA 입력을 메인 스레드에서 받는 콜백 ────────
+        # 스레드 → 메인 스레드 간 값 전달용 queue
+        import queue as _q
+        _otp_q = _q.Queue()
+        _pw_q  = _q.Queue()
+
+        def _ask_otp(ph: str) -> str:
+            """메인 스레드에서 OTP 입력 다이얼로그 실행"""
+            def _show():
+                dlg = tk.Toplevel(self.app)
+                dlg.title("Telegram OTP 인증")
+                dlg.resizable(False, False)
+                dlg.grab_set()
+                dlg.focus_force()
+                # 창 중앙 배치
+                dlg.update_idletasks()
+                w, h = 380, 220
+                x = self.app.winfo_x() + (self.app.winfo_width()  - w) // 2
+                y = self.app.winfo_y() + (self.app.winfo_height() - h) // 2
+                dlg.geometry(f"{w}x{h}+{x}+{y}")
+                dlg.configure(bg=PALETTE["card"])
+
+                tk.Label(dlg, text="📲  텔레그램 OTP 인증",
+                         font=(_FF, 12, "bold"),
+                         bg=PALETTE["card"], fg=PALETTE["primary"]
+                         ).pack(pady=(18, 4))
+                tk.Label(dlg,
+                         text=f"전화번호 {ph} 로 전송된\n인증 코드를 입력하세요.",
+                         font=F_BODY, bg=PALETTE["card"],
+                         fg=PALETTE["text2"]
+                         ).pack(pady=(0, 12))
+
+                code_var = tk.StringVar()
+                entry = tk.Entry(dlg, textvariable=code_var,
+                                 font=(_FF, 14, "bold"),
+                                 justify="center", width=12,
+                                 bg=PALETTE["card2"],
+                                 fg=PALETTE["primary"],
+                                 insertbackground=PALETTE["primary"],
+                                 relief=tk.FLAT,
+                                 highlightbackground=PALETTE["border"],
+                                 highlightthickness=2)
+                entry.pack(pady=(0, 14))
+                entry.focus_set()
+
+                def _confirm(event=None):
+                    _otp_q.put(code_var.get().strip())
+                    dlg.destroy()
+
+                def _cancel():
+                    _otp_q.put("")
+                    dlg.destroy()
+
+                btn_f = tk.Frame(dlg, bg=PALETTE["card"])
+                btn_f.pack()
+                tk.Button(btn_f, text="✅ 확인",
+                          command=_confirm,
+                          font=F_BTN, bg=PALETTE["primary"], fg="#fff",
+                          relief=tk.FLAT, cursor="hand2",
+                          padx=16, pady=6, bd=0
+                          ).pack(side=tk.LEFT, padx=(0, 8))
+                tk.Button(btn_f, text="취소",
+                          command=_cancel,
+                          font=F_BTN, bg=PALETTE["card2"],
+                          fg=PALETTE["text2"],
+                          relief=tk.FLAT, cursor="hand2",
+                          padx=12, pady=6, bd=0
+                          ).pack(side=tk.LEFT)
+                entry.bind("<Return>", _confirm)
+                dlg.protocol("WM_DELETE_WINDOW", _cancel)
+
+            self.app.after(0, _show)
+            return _otp_q.get()   # 스레드 블로킹 대기
+
+        def _ask_password(ph: str) -> str:
+            """메인 스레드에서 2FA 비밀번호 입력 다이얼로그 실행"""
+            def _show():
+                dlg = tk.Toplevel(self.app)
+                dlg.title("Telegram 2FA 비밀번호")
+                dlg.resizable(False, False)
+                dlg.grab_set()
+                dlg.focus_force()
+                dlg.update_idletasks()
+                w, h = 380, 210
+                x = self.app.winfo_x() + (self.app.winfo_width()  - w) // 2
+                y = self.app.winfo_y() + (self.app.winfo_height() - h) // 2
+                dlg.geometry(f"{w}x{h}+{x}+{y}")
+                dlg.configure(bg=PALETTE["card"])
+
+                tk.Label(dlg, text="🔐  2단계 인증 비밀번호",
+                         font=(_FF, 12, "bold"),
+                         bg=PALETTE["card"], fg=PALETTE["warning"]
+                         ).pack(pady=(18, 4))
+                tk.Label(dlg,
+                         text=f"{ph} 계정의 2FA 비밀번호를 입력하세요.",
+                         font=F_BODY, bg=PALETTE["card"],
+                         fg=PALETTE["text2"]
+                         ).pack(pady=(0, 12))
+
+                pw_var = tk.StringVar()
+                entry = tk.Entry(dlg, textvariable=pw_var,
+                                 show="*",
+                                 font=(_FF, 13),
+                                 justify="center", width=18,
+                                 bg=PALETTE["card2"],
+                                 fg=PALETTE["text"],
+                                 insertbackground=PALETTE["text"],
+                                 relief=tk.FLAT,
+                                 highlightbackground=PALETTE["border"],
+                                 highlightthickness=2)
+                entry.pack(pady=(0, 14))
+                entry.focus_set()
+
+                def _confirm(event=None):
+                    _pw_q.put(pw_var.get())
+                    dlg.destroy()
+
+                def _cancel():
+                    _pw_q.put("")
+                    dlg.destroy()
+
+                btn_f = tk.Frame(dlg, bg=PALETTE["card"])
+                btn_f.pack()
+                tk.Button(btn_f, text="✅ 확인",
+                          command=_confirm,
+                          font=F_BTN, bg=PALETTE["warning"], fg="#fff",
+                          relief=tk.FLAT, cursor="hand2",
+                          padx=16, pady=6, bd=0
+                          ).pack(side=tk.LEFT, padx=(0, 8))
+                tk.Button(btn_f, text="취소",
+                          command=_cancel,
+                          font=F_BTN, bg=PALETTE["card2"],
+                          fg=PALETTE["text2"],
+                          relief=tk.FLAT, cursor="hand2",
+                          padx=12, pady=6, bd=0
+                          ).pack(side=tk.LEFT)
+                entry.bind("<Return>", _confirm)
+                dlg.protocol("WM_DELETE_WINDOW", _cancel)
+
+            self.app.after(0, _show)
+            return _pw_q.get()   # 스레드 블로킹 대기
+
+        # ── 실제 연결 (별도 스레드) ────────────────────────────
         def _do_test():
             log_fn = None
             if hasattr(self.app, "_log_tab"):
                 log_fn = lambda m, lv="INFO": self.app.after(
-                    0, lambda: self.app._log_tab.append(m, lv, "TG계정"))
+                    0, lambda mm=m, ll=lv:
+                        self.app._log_tab.append(mm, ll, "TG계정"))
             eng = _get_tg_engine(log_fn)
-            ok  = eng.connect(acct)
+            ok  = eng.connect(acct,
+                              otp_callback=_ask_otp,
+                              password_callback=_ask_password)
             self.app.after(0, lambda: self._fill_form(acct))
             self.app.after(0, self._refresh_tv)
             if ok:
                 self.app.after(0, lambda: messagebox.showinfo(
-                    "연결 성공", f"✅ [{phone}] 연결 및 인증 확인 완료!"))
+                    "연결 성공",
+                    f"✅ [{phone}] 연결 및 인증 완료!\n"
+                    f"세션 파일이 저장되어 다음부터 자동 로그인됩니다."))
             else:
                 self.app.after(0, lambda: messagebox.showwarning(
-                    "연결 실패", f"❌ [{phone}] 연결 실패\n로그 탭을 확인하세요."))
+                    "연결 실패",
+                    f"❌ [{phone}] 연결 실패\n"
+                    f"로그 탭에서 원인을 확인하세요."))
 
         threading.Thread(target=_do_test, daemon=True).start()
 
