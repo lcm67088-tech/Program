@@ -5235,51 +5235,15 @@ class TemplateTab(tk.Frame):
         if wk in ("telegram_message", "telegram_join_and_message"):
             sep()
 
+            # Telethon API 모드 여부 (계정 있으면 API 모드 → 좌표 불필요)
+            _is_tg_api_join = (
+                HAS_TELETHON
+                and bool(load_json(TG_ACCOUNTS_PATH, []))
+            )
+
             # join_first 체크박스
             self._join_first_var = tk.BooleanVar(
                 value=self._cur("join_first", False))
-
-            # join_btn 좌표 행 (join_first=True 시만 표시)
-            self._tg_jb_x = tk.StringVar(
-                value=str(self._cur("join_btn_coord", {}).get("x", 0)))
-            self._tg_jb_y = tk.StringVar(
-                value=str(self._cur("join_btn_coord", {}).get("y", 0)))
-
-            r_jb = tk.Frame(card, bg=PALETTE["card"])
-            tk.Label(r_jb, text="가입버튼 좌표", width=16, anchor=tk.W,
-                     font=F_LABEL, bg=PALETTE["card"],
-                     fg=PALETTE["accent"]).pack(side=tk.LEFT)
-            for lbl_t, var in [("X:", self._tg_jb_x), ("Y:", self._tg_jb_y)]:
-                tk.Label(r_jb, text=lbl_t, font=F_MONO_S,
-                         bg=PALETTE["card"], fg=PALETTE["text"]
-                         ).pack(side=tk.LEFT, padx=(4, 0))
-                tk.Entry(r_jb, textvariable=var, width=6,
-                         bg=PALETTE["card2"], fg=PALETTE["text"],
-                         insertbackground=PALETTE["text"],
-                         relief=tk.FLAT, font=F_MONO
-                         ).pack(side=tk.LEFT)
-            self._tg_jb_disp = tk.Label(r_jb, text="",
-                font=F_MONO_S, bg=PALETTE["card"], fg=PALETTE["success_text"])
-            self._tg_jb_disp.pack(side=tk.LEFT, padx=(6, 0))
-            tk.Button(r_jb, text="📸 캡처",
-                      command=lambda: self._capture_point(
-                          "join_btn_coord",
-                          self._tg_jb_x, self._tg_jb_y,
-                          self._tg_jb_disp),
-                      bg=PALETTE["accent"], fg="#FFFFFF",
-                      relief=tk.FLAT, font=F_SMALL,
-                      cursor="hand2", padx=8, pady=3, bd=0
-                      ).pack(side=tk.LEFT, padx=(8, 0))
-            tk.Label(r_jb, text=" ← 가입 후 발송 체크 시 필수",
-                     font=F_SMALL, bg=PALETTE["card"],
-                     fg=PALETTE["warning_text"]
-                     ).pack(side=tk.LEFT, padx=(4, 0))
-
-            def _toggle_jb_coord(*_):
-                if self._join_first_var.get():
-                    r_jb.pack(fill=tk.X, padx=12, pady=(0, 6))
-                else:
-                    r_jb.pack_forget()
 
             def _join_first_w(p):
                 tk.Checkbutton(p, text="✅ 가입 후 발송",
@@ -5290,12 +5254,69 @@ class TemplateTab(tk.Frame):
                                activebackground=PALETTE["card"],
                                font=F_LABEL,
                                ).pack(side=tk.LEFT)
-                tk.Label(p, text="(그룹 링크 열고 가입 버튼 클릭 후 메시지 발송)",
-                         font=F_SMALL, bg=PALETTE["card"],
-                         fg=PALETTE["muted"]
-                         ).pack(side=tk.LEFT, padx=(6, 0))
+                if _is_tg_api_join:
+                    # Telethon 모드: 좌표 불필요 안내
+                    tk.Label(p, text="(Telethon API — 좌표 설정 불필요, 자동 가입 후 발송)",
+                             font=F_SMALL, bg=PALETTE["card"],
+                             fg=PALETTE["muted"]
+                             ).pack(side=tk.LEFT, padx=(6, 0))
+                else:
+                    # pyautogui 모드: 기존 안내
+                    tk.Label(p, text="(그룹 링크 열고 가입 버튼 클릭 후 메시지 발송)",
+                             font=F_SMALL, bg=PALETTE["card"],
+                             fg=PALETTE["muted"]
+                             ).pack(side=tk.LEFT, padx=(6, 0))
             row("가입 옵션", _join_first_w)
-            _toggle_jb_coord()  # 초기 상태 반영
+
+            # 가입버튼 좌표 행 — pyautogui 모드에서만 표시
+            # Telethon API 모드(계정 있음)에서는 join_group() API 사용 → 좌표 불필요
+            if not _is_tg_api_join:
+                self._tg_jb_x = tk.StringVar(
+                    value=str(self._cur("join_btn_coord", {}).get("x", 0)))
+                self._tg_jb_y = tk.StringVar(
+                    value=str(self._cur("join_btn_coord", {}).get("y", 0)))
+
+                r_jb = tk.Frame(card, bg=PALETTE["card"])
+                tk.Label(r_jb, text="가입버튼 좌표", width=16, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"],
+                         fg=PALETTE["accent"]).pack(side=tk.LEFT)
+                for lbl_t, var in [("X:", self._tg_jb_x), ("Y:", self._tg_jb_y)]:
+                    tk.Label(r_jb, text=lbl_t, font=F_MONO_S,
+                             bg=PALETTE["card"], fg=PALETTE["text"]
+                             ).pack(side=tk.LEFT, padx=(4, 0))
+                    tk.Entry(r_jb, textvariable=var, width=6,
+                             bg=PALETTE["card2"], fg=PALETTE["text"],
+                             insertbackground=PALETTE["text"],
+                             relief=tk.FLAT, font=F_MONO
+                             ).pack(side=tk.LEFT)
+                self._tg_jb_disp = tk.Label(r_jb, text="",
+                    font=F_MONO_S, bg=PALETTE["card"], fg=PALETTE["success_text"])
+                self._tg_jb_disp.pack(side=tk.LEFT, padx=(6, 0))
+                tk.Button(r_jb, text="📸 캡처",
+                          command=lambda: self._capture_point(
+                              "join_btn_coord",
+                              self._tg_jb_x, self._tg_jb_y,
+                              self._tg_jb_disp),
+                          bg=PALETTE["accent"], fg="#FFFFFF",
+                          relief=tk.FLAT, font=F_SMALL,
+                          cursor="hand2", padx=8, pady=3, bd=0
+                          ).pack(side=tk.LEFT, padx=(8, 0))
+                tk.Label(r_jb, text=" ← 가입 후 발송 체크 시 필수",
+                         font=F_SMALL, bg=PALETTE["card"],
+                         fg=PALETTE["warning_text"]
+                         ).pack(side=tk.LEFT, padx=(4, 0))
+
+                def _toggle_jb_coord(*_):
+                    if self._join_first_var.get():
+                        r_jb.pack(fill=tk.X, padx=12, pady=(0, 6))
+                    else:
+                        r_jb.pack_forget()
+
+                _toggle_jb_coord()  # 초기 상태 반영
+            else:
+                # Telethon 모드: _toggle_jb_coord 는 no-op
+                def _toggle_jb_coord(*_):
+                    pass
 
     # ── 좌표 캡처 — 포인트 ──────────────────────────────────
     def _capture_point(self, key, xv, yv, disp_lbl, disp_wrap=None):
