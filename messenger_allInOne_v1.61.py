@@ -7183,6 +7183,7 @@ class WorkflowExecutor:
         self._fail      = 0
         self._report_rows: list[dict] = []   # 발행 결과 행 (리포트용)
         self._started_at = None              # 실행 시작 시각
+        self._used_telethon = False          # ★ 실제 Telethon 경로 진입 여부 (화면 캡처 스킵 판별)
 
         # ── 스크린샷 설정 읽기 ─────────────────────────────
         _ss_cfg = load_json(CONFIG_PATH, {}).get("screenshot", {})
@@ -7767,20 +7768,41 @@ class WorkflowExecutor:
             self._done(0, 1)
             return
 
-        # ★ 시작 캡처 + 주기적 캡처 스레드 시작
-        self._capture_screen("start")
-        self._start_periodic_capture()
+        # ── 사전 캡처: 아직 Telethon 여부 미확정 → GUI 모드에서만 start 캡처
+        # _used_telethon 은 fn() 실행 중 실제 Telethon 경로 진입 시 True 로 세팅됨
+        # (assigned_accounts 필터링 후 매칭 0건 → pyautogui 폴백 시는 False 유지)
+        _pre_is_telethon = (
+            self.wk == "telegram_message"
+            and HAS_TELETHON
+            and bool(load_json(TG_ACCOUNTS_PATH, []))
+        )
+        if not _pre_is_telethon:
+            self._capture_screen("start")
+            self._start_periodic_capture()
 
         try:
             fn()
         except Exception as e:
             self._log(f"실행 중 오류: {e}", "ERROR")
-            # ★ 예외 발생 시 즉시 캡처
-            if self._ss_on_error:
+            # ★ 예외 발생 시 즉시 캡처 — 실제 GUI 모드 여부를 _used_telethon 로 판별
+            if self._ss_on_error and not self._used_telethon:
                 self._capture_screen("error")
         finally:
-            self._stop_periodic_capture()    # 주기적 캡처 스레드 종료
-            self._capture_screen("finish")   # 완료 시 최종 캡처
+            # ★ fn() 실행 완료 후 _used_telethon 확정값으로 캡처 여부 결정
+            # 케이스별 동작:
+            #   [A] Telethon 정상 실행   → _used_telethon=True  → 캡처 없음
+            #   [B] 매칭 실패 → 폴백     → _used_telethon=False → 캡처 + 스레드 종료
+            #   [C] pyautogui 모드 처음부터 → _used_telethon=False → 캡처 + 스레드 종료
+            if not self._used_telethon:
+                if _pre_is_telethon:
+                    # [B] 사전에 Telethon 예상했으나 실제론 폴백 → 캡처 스레드가 시작 안 됨
+                    # → start/periodic 캡처는 이미 skip 됐으므로 finish만
+                    self._capture_screen("finish")
+                else:
+                    # [C] 처음부터 pyautogui 모드 → 스레드 종료 + finish 캡처
+                    self._stop_periodic_capture()
+                    self._capture_screen("finish")
+            # [A] Telethon 정상: 아무 캡처도 없음
             self._save_report()              # ★ 실행 완료 시 자동 리포트 저장
             self._done(self._succ, self._fail)
 
@@ -8572,6 +8594,7 @@ class WorkflowExecutor:
                     self._log(f"[TG] 지정 계정 {len(tg_accounts)}개로 실행 "
                               f"(전체 중 {len(_assigned)}개 선택됨)")
                 if tg_accounts:
+                    self._used_telethon = True   # ★ 실제 Telethon 경로 진입 확정
                     self._run_telegram_message_telethon(tg_accounts)
                     return
                 else:
