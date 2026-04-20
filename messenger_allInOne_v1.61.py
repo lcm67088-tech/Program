@@ -1850,6 +1850,19 @@ PLATFORM_WORKFLOWS = {
         "coord_types":  ["point", "point", "point"],
         "coord_note":   "Telethon 계정 설정 시 좌표 불필요 (API 방식 사용)",
     },
+    "telegram_join_and_message": {
+        "name":         "가입 후 메시지 발송",
+        "platform":     "telegram",
+        "needs_ocr":    False,
+        "needs_message":True,
+        "needs_image":  True,   # 이미지 첨부 지원
+        "needs_telethon": False,   # Telethon 권장, 없어도 join_first 옵션으로 동작
+        "telethon_preferred": True,
+        "coord_keys":   ["chrome_addr", "join_btn", "message_input", "send_btn"],
+        "coord_labels": ["🌐 크롬 주소창", "✅ 가입 버튼", "✏️ 메시지 입력창", "📤 전송 버튼"],
+        "coord_types":  ["point", "point", "point", "point"],
+        "coord_note":   "Telethon 계정 설정 시 좌표 불필요 (API 방식 사용)",
+    },
 }
 
 
@@ -1859,6 +1872,7 @@ WORKFLOW_BASE_DURATION: dict = {
     "kakao_openchat": 120,
     "telegram_join":   60,
     "telegram_message": 75,
+    "telegram_join_and_message": 120,   # 가입(60s) + 메시지(60s) 합산
 }
 WORKFLOW_BASE_DURATION_DEFAULT = 90
 
@@ -1902,6 +1916,18 @@ SAMPLE_CSV_DATA = {
             ("최지원",  "https://t.me/choi_jw88"),
         ],
         "hint": "※ 텔레그램링크: 개인 사용자 t.me/username 형식",
+    },
+    "telegram_join_and_message": {
+        "filename": "예시_텔레그램가입후발송.csv",
+        "header":   "이름,텔레그램링크",
+        "rows": [
+            ("채널A", "https://t.me/channel_a"),
+            ("채널B", "https://t.me/channel_b"),
+            ("그룹C", "https://t.me/group_c"),
+            ("채널D", "t.me/channel_d"),
+            ("그룹E", "https://t.me/joinchat/XXXXXXXXXX"),
+        ],
+        "hint": "※ 텔레그램링크: 그룹/채널 t.me/xxx 형식 — 가입 후 메시지 자동 발송",
     },
 }
 
@@ -3436,7 +3462,7 @@ class TemplateTab(tk.Frame):
         # 텔레그램: none/clipboard/file
         # 카카오:   file/dragdrop
         _wk_now = self._wtype_var.get()
-        _is_tg  = _wk_now == "telegram_message"
+        _is_tg  = _wk_now in ("telegram_message", "telegram_join_and_message")
         # Telethon API 모드 여부: Telethon 설치 + 계정 존재 시 True
         _is_tg_api = (
             _is_tg
@@ -4384,7 +4410,7 @@ class TemplateTab(tk.Frame):
         # ════════════════════════════════════════════════
         # 텔레그램: API 모드 / 일반(pyautogui) 모드 분리
         # ════════════════════════════════════════════════
-        elif wk in ("telegram_join", "telegram_message"):
+        elif wk in ("telegram_join", "telegram_message", "telegram_join_and_message"):
             _is_tg_api_delay = (
                 HAS_TELETHON
                 and bool(load_json(TG_ACCOUNTS_PATH, []))
@@ -4921,7 +4947,7 @@ class TemplateTab(tk.Frame):
         #    카카오: message_input_coord (coords 하위)
         #    텔레그램: tg_message_input_coord (tmpl 최상위)  ← 완전 분리
         # ════════════════════════════════════════
-        _is_tg_sc = wk == "telegram_message"
+        _is_tg_sc = wk in ("telegram_message", "telegram_join_and_message")
 
         if not _is_tg_sc:
             # ── 카카오 전용: 바로입력 / 좌표클릭 ──────────────
@@ -5206,7 +5232,7 @@ class TemplateTab(tk.Frame):
         # ════════════════════════════════════════
         # ④ 가입 후 발송 옵션 (telegram_message 전용)
         # ════════════════════════════════════════
-        if wk == "telegram_message":
+        if wk in ("telegram_message", "telegram_join_and_message"):
             sep()
 
             # join_first 체크박스
@@ -5593,7 +5619,7 @@ class TemplateTab(tk.Frame):
                 data["account_switch_delay"] = safe_float(
                     self._account_sw_delay.get(), 1.0)
             # ▶ 텔레그램 전송/닫기 방식 저장 (메시지 계열)
-            if wk == "telegram_message":
+            if wk in ("telegram_message", "telegram_join_and_message"):
                 if hasattr(self, "_send_method_var"):
                     data["send_method"]      = self._send_method_var.get()
                 if hasattr(self, "_close_after_var"):
@@ -7307,7 +7333,7 @@ class WorkflowExecutor:
         if wk == "kakao_friend":
             for line in lines:
                 rows.append({"카카오아이디": line})
-        elif wk in ("telegram_join", "telegram_message"):
+        elif wk in ("telegram_join", "telegram_message", "telegram_join_and_message"):
             for line in lines:
                 rows.append({"이름": "", "텔레그램링크": line})
         else:
@@ -7764,10 +7790,11 @@ class WorkflowExecutor:
         import datetime as _dt_run
         self._started_at = _dt_run.datetime.now()
         dispatch = {
-            "kakao_friend":    self._run_kakao_friend,
-            "kakao_openchat":  self._run_kakao_openchat,
-            "telegram_join":   self._run_telegram_join,
-            "telegram_message":self._run_telegram_message,
+            "kakao_friend":              self._run_kakao_friend,
+            "kakao_openchat":            self._run_kakao_openchat,
+            "telegram_join":             self._run_telegram_join,
+            "telegram_message":          self._run_telegram_message,
+            "telegram_join_and_message": self._run_telegram_join_and_message,
         }
         fn = dispatch.get(self.wk)
         if not fn:
@@ -7779,7 +7806,8 @@ class WorkflowExecutor:
         # _used_telethon 은 fn() 실행 중 실제 Telethon 경로 진입 시 True 로 세팅됨
         # (assigned_accounts 필터링 후 매칭 0건 → pyautogui 폴백 시는 False 유지)
         _pre_is_telethon = (
-            self.wk == "telegram_message"
+            self.wk in ("telegram_message", "telegram_join",
+                        "telegram_join_and_message")
             and HAS_TELETHON
             and bool(load_json(TG_ACCOUNTS_PATH, []))
         )
@@ -8370,6 +8398,7 @@ class WorkflowExecutor:
                     self._log(f"[TG] 지정 계정 {len(tg_accounts)}개로 실행 "
                               f"(전체 중 {len(_assigned)}개 선택됨)")
                 if tg_accounts:
+                    self._used_telethon = True   # ★ 실제 Telethon 경로 진입 확정
                     self._run_telegram_join_telethon(tg_accounts)
                     return
                 else:
@@ -8770,6 +8799,236 @@ class WorkflowExecutor:
             if self._sleep_or_stop(random.uniform(tg_min, tg_max)): return  # BUG-03 fix
 
         self._log(f"완료 — 성공:{self._succ} / 실패:{self._fail}", "SUCCESS")
+
+    # ════════════════════════════════════════════════════════
+    # 텔레그램 가입 후 메시지 발송 (v1.68)
+    # ════════════════════════════════════════════════════════
+    def _run_telegram_join_and_message(self):
+        """텔레그램 그룹/채널 가입 후 메시지 발송  [v1.68 — Telethon 우선, pyautogui 폴백]
+
+        · 각 대상마다 join_group → send_message 순서로 실행
+        · Telethon: join_group() + send_message() API 직접 호출
+        · pyautogui 폴백: join_first=True 로 _run_telegram_message() 위임
+        """
+        # ── [TG-5] Telethon 라우팅 ────────────────────────────
+        if HAS_TELETHON:
+            tg_accounts = load_json(TG_ACCOUNTS_PATH, [])
+            if tg_accounts:
+                _assigned = self.job.get("assigned_accounts", [])
+                if _assigned:
+                    tg_accounts = [a for a in tg_accounts
+                                   if TelethonEngine._normalize_phone(
+                                       a.get("phone", "")) in _assigned]
+                    self._log(f"[TG] 지정 계정 {len(tg_accounts)}개로 실행 "
+                              f"(전체 중 {len(_assigned)}개 선택됨)")
+                if tg_accounts:
+                    self._used_telethon = True   # ★ 실제 Telethon 경로 진입 확정
+                    self._run_telegram_join_and_message_telethon(tg_accounts)
+                    return
+                else:
+                    self._log("[TG] 선택된 계정이 없거나 매칭 실패 → pyautogui 폴백", "WARN")
+            else:
+                self._log("[TG] Telethon 설치됨 — 계정 없음 → pyautogui 폴백 실행\n"
+                          "     텔레그램 계정 탭에서 계정을 추가하면 API 방식으로 자동 전환됩니다.",
+                          "WARN")
+        else:
+            self._log("[TG] Telethon 미설치 → pyautogui(크롬 자동화) 방식으로 실행\n"
+                      "     pip install telethon 으로 설치하면 더 안정적인 API 방식을 사용할 수 있습니다.",
+                      "INFO")
+
+        # ── 폴백: join_first=True 강제 설정 후 기존 pyautogui 방식 위임 ──
+        if not HAS_PYAUTOGUI:
+            self._log("pyautogui 가 필요합니다. (Telethon 미설치 + pyautogui 없음)", "ERROR")
+            return
+        # 템플릿에 join_first 강제 적용 (폴백 시 가입 버튼 클릭 활성화)
+        self.tmpl = dict(self.tmpl)
+        self.tmpl["join_first"] = True
+        self._log("[폴백] join_first=True 로 강제 설정 후 pyautogui 메시지 발송 실행", "INFO")
+        self._run_telegram_message()
+
+    def _run_telegram_join_and_message_telethon(self, accounts: list):
+        """Telethon — 그룹/채널 가입 후 메시지 발송  [v1.68]
+
+        각 대상 링크마다:
+          1) join_group()   — 채널/그룹 가입
+          2) send_message() — 메시지 발송
+        가입 실패 시 해당 대상 건너뜀 (메시지 미발송).
+        """
+        rows    = self._read_targets()
+        total   = len(rows)
+        message = self.tmpl.get("message") or self.job.get("message", "")
+        if not rows:
+            self._log("대상 목록이 비어 있습니다.", "WARN"); return
+        if not message:
+            self._log("메시지가 비어 있습니다.", "ERROR"); return
+
+        # ── 이미지 첨부 설정 ──────────────────────────────────
+        use_img  = self.tmpl.get("use_image", False)
+        img_mode = self.tmpl.get("image_mode", "none")
+        img_path = self.tmpl.get("image_path", "").strip() if use_img else ""
+        if use_img and img_mode == "file" and img_path:
+            import os as _os
+            if not _os.path.isfile(img_path):
+                self._log(f"⚠️ 이미지 파일 없음: {img_path} — 이미지 없이 진행", "WARN")
+                img_path = ""
+        elif use_img and img_mode == "clipboard":
+            self._log("⚠️ Telethon 모드에서 클립보드 첨부는 지원 안됨. "
+                      "파일 경로 방식을 사용하세요.", "WARN")
+            img_path = ""
+        else:
+            img_path = ""
+
+        # ── 딜레이 설정 ────────────────────────────────────────
+        api_connect_dly = safe_float(self.tmpl.get("tg_api_connect_delay", 2.0))
+        api_before_send = safe_float(self.tmpl.get("tg_api_before_send",   0.5))
+        api_after_send  = safe_float(self.tmpl.get("tg_api_after_send",    1.0))
+        api_join_delay  = safe_float(self.tmpl.get("tg_join_click",        2.0))  # 가입 후 대기
+        api_capture_dly = safe_float(self.tmpl.get("tg_api_capture_delay", 2.0))
+        api_capture_n   = int(safe_float(self.tmpl.get("tg_api_capture_msgs", 5), 5))
+        api_capture_on  = bool(self.tmpl.get("tg_api_capture_on", False))
+        api_warmup_add  = safe_float(self.tmpl.get("tg_api_acct_warmup",   0.5))
+        pre_check_acct  = bool(self.tmpl.get("tg_pre_check_acct", True))
+        pre_check_perm  = bool(self.tmpl.get("tg_pre_check_perm", True))
+        tg_min  = safe_float(self.tmpl.get("tg_between_min", 3.0))
+        tg_max  = safe_float(self.tmpl.get("tg_between_max", 7.0))
+        sw_dly  = safe_float(self.tmpl.get("account_switch_delay", 1.0))
+
+        mode = self.tmpl.get("account_mode", "zigzag")
+        self._log(
+            f"[Telethon] 가입+메시지 발송 시작 — 총 {total}개 / "
+            f"계정 {len(accounts)}개 / 모드: {mode}", "INFO")
+
+        def _log_fn(msg, lv="INFO"):
+            self._log(msg, lv)
+
+        eng = _get_tg_engine(_log_fn)
+        eng.load_accounts(accounts)
+
+        # ── 계정 사전 연결 ─────────────────────────────────────
+        active_accounts = []
+        for i, acct in enumerate(accounts):
+            if i > 0 and api_connect_dly > 0:
+                time.sleep(api_connect_dly)
+            if eng.connect(acct):
+                active_accounts.append(acct)
+        if not active_accounts:
+            self._log("연결 가능한 계정이 없습니다.", "ERROR"); return
+
+        n_accts = len(active_accounts)
+
+        def _do_join_and_send(acct, peer, msg, idx, total_cnt):
+            """단일 대상: 가입 → 메시지 발송"""
+            self._log(f"[{idx+1}/{total_cnt}] [{acct.get('name','')}] → {peer}")
+
+            # ① 가입
+            join_ok = eng.join_group(acct, peer, self._stop)
+            if not join_ok:
+                self._fail += 1
+                self._record(peer, "실패")
+                if self._report_rows:
+                    self._report_rows[-1]["계정"] = acct.get("name", "")
+                    self._report_rows[-1]["비고"] = "가입 실패"
+                return False
+
+            self._log(f"  ✅ 가입 완료 — {api_join_delay}s 대기 후 메시지 발송", "INFO")
+            time.sleep(api_join_delay)  # 가입 후 대기 (서버 반영)
+
+            # ② 메시지 발송
+            if api_before_send > 0:
+                time.sleep(api_before_send)
+            result = eng.send_message(acct, peer, msg, self._stop,
+                                      img_path=img_path,
+                                      pre_check_acct=pre_check_acct,
+                                      pre_check_perm=pre_check_perm)
+            ok     = result.get("ok", False)
+            msg_id = result.get("msg_id")
+
+            if ok:
+                self._succ += 1
+                self._record(peer, "성공")
+            else:
+                self._fail += 1
+                self._record(peer, "실패")
+                if self._report_rows:
+                    self._report_rows[-1]["비고"] = "가입 성공 / 메시지 실패"
+            if self._report_rows:
+                self._report_rows[-1]["계정"] = acct.get("name", "")
+                if msg_id:
+                    self._report_rows[-1]["msg_id"] = str(msg_id)
+
+            if api_after_send > 0:
+                time.sleep(api_after_send)
+            if ok and api_capture_on:
+                self._tg_capture_chat(eng, acct, peer,
+                                      capture_delay=api_capture_dly,
+                                      n_msgs=api_capture_n,
+                                      sent_msg_id=msg_id)
+            return ok
+
+        # ── 모드별 실행 ────────────────────────────────────────
+        if mode == "zigzag":
+            for idx, row in enumerate(rows):
+                if self._is_stopped(): break
+                peer = str(row.get("텔레그램링크",
+                           row.get("link",
+                           row.get("username", "")))).strip()
+                if not peer:
+                    self._fail += 1; continue
+                acct = active_accounts[idx % n_accts]
+                self._progress(idx+1, total,
+                               acct=acct.get("name", ""),
+                               peer=peer)
+                msg = self._apply_vars(message, row)
+                _do_join_and_send(acct, peer, msg, idx, total)
+                if n_accts > 1 and idx % n_accts == n_accts - 1:
+                    if self._sleep_or_stop(sw_dly + api_warmup_add): break
+                else:
+                    if self._sleep_or_stop(random.uniform(tg_min, tg_max)): break
+
+        elif mode == "split":
+            chunk = max(1, (total + n_accts - 1) // n_accts)
+            for i, acct in enumerate(active_accounts):
+                if self._is_stopped(): break
+                if i > 0:
+                    if self._sleep_or_stop(sw_dly + api_warmup_add): break
+                segment = rows[i*chunk : (i+1)*chunk]
+                for idx, row in enumerate(segment):
+                    if self._is_stopped(): break
+                    peer = str(row.get("텔레그램링크",
+                               row.get("link",
+                               row.get("username", "")))).strip()
+                    if not peer:
+                        self._fail += 1; continue
+                    abs_idx = i*chunk + idx
+                    self._progress(abs_idx+1, total,
+                                   acct=acct.get("name", ""),
+                                   peer=peer)
+                    msg = self._apply_vars(message, row)
+                    _do_join_and_send(acct, peer, msg, abs_idx, total)
+                    if self._sleep_or_stop(random.uniform(tg_min, tg_max)): break
+
+        else:  # all
+            for i, acct in enumerate(active_accounts):
+                if self._is_stopped(): break
+                if i > 0:
+                    if self._sleep_or_stop(sw_dly + api_warmup_add): break
+                self._log(f"[{acct.get('name','')}] 전체 {total}개 가입+발송 시작")
+                for idx, row in enumerate(rows):
+                    if self._is_stopped(): break
+                    peer = str(row.get("텔레그램링크",
+                               row.get("link",
+                               row.get("username", "")))).strip()
+                    if not peer:
+                        self._fail += 1; continue
+                    self._progress(idx+1, total,
+                                   acct=acct.get("name", ""),
+                                   peer=peer)
+                    msg = self._apply_vars(message, row)
+                    _do_join_and_send(acct, peer, msg, idx, total)
+                    if self._sleep_or_stop(random.uniform(tg_min, tg_max)): break
+
+        self._log(f"[Telethon] 가입+메시지 완료 — 성공:{self._succ} / 실패:{self._fail}",
+                  "SUCCESS")
 
     def _run_telegram_message_telethon(self, accounts: list):
         """Telethon 엔진으로 메시지 발송 — 단계별 딜레이 + 채팅 캡처  [v1.61 TG-5]"""
