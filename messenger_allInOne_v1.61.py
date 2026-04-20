@@ -9767,6 +9767,7 @@ class PostingEngine:
         self._idle                         = threading.Event()
         self._idle.set()
         self.running                       = False
+        self._stopping                     = False  # v1.77: 중지 신호
         self._cancelled                    = cancelled_jobs   # JobsTab과 공유
         self._current_name: str | None     = None
         self._current_stop: threading.Event | None = None
@@ -9780,9 +9781,11 @@ class PostingEngine:
 
     def stop(self):
         """전체 중지: 큐 비우기 + 현재 실행 업무 중단"""
+        self._stopping = True         # v1.77: 중지 신호 (running은 worker가 확인)
         self.drain()
         if self._current_stop:
             self._current_stop.set()
+        self._idle.set()              # v1.77: wait_until_idle() 블로킹 해제
 
     def drain(self):
         """대기 중인 작업 전부 제거"""
@@ -9796,6 +9799,18 @@ class PostingEngine:
     def add_task(self, job: dict, template: dict,
                  log_fn, progress_fn, done_fn):
         """작업을 큐에 추가"""
+        # v1.77: stop 후 재실행 시 worker 재시작
+        if self._stopping or not self.running:
+            self._stopping = False
+            self.running   = True
+            self._thread   = threading.Thread(
+                target=self._worker, daemon=True)
+            self._thread.start()
+        # 큐 적재 전 idle 이벤트 미리 clear — race condition 방지
+        # add_task → wait_until_idle 즉시 호출 시 worker가 아직 busy 세팅
+        # 전이면 idle 상태 그대로라 대기 없이 통과하는 버그 수정
+        self._idle.clear()
+        self._busy.set()
         self.q.put((job, template, log_fn, progress_fn, done_fn))
 
     def cancel_job(self, name: str):
@@ -9812,10 +9827,21 @@ class PostingEngine:
         return self._busy.is_set()
 
     def wait_until_idle(self, timeout=None):
-        self._idle.wait(timeout)
+        # v1.77: q.join() 기반으로 교체 — 큐에 남은 모든 task_done() 완료 대기
+        # 기존 _idle.wait() 는 race condition 으로 조기 종료될 수 있었음
+        if timeout is None:
+            self.q.join()
+        else:
+            import threading as _th_wait
+            _done = _th_wait.Event()
+            def _waiter():
+                self.q.join()
+                _done.set()
+            _th_wait.Thread(target=_waiter, daemon=True).start()
+            _done.wait(timeout)
 
     def _worker(self):
-        while self.running:
+        while self.running and not self._stopping:
             try:
                 job, tmpl, log_fn, progress_fn, done_fn =                     self.q.get(timeout=1)
             except queue.Empty:
@@ -9849,8 +9875,11 @@ class PostingEngine:
             self._current_name = None
             self._current_stop = None
 
+            # 큐가 비면 idle 상태로 전환
             if self.q.empty():
                 self._busy.clear()
+                self._current_name = None
+                self._current_stop = None
                 self._idle.set()
 
 
@@ -9974,7 +10003,7 @@ def _jobs_run_all(self):
             self._engine.wait_until_idle(timeout=None)
 
             # 엔진이 stop 됐으면 (중지 버튼) 루프 종료
-            if not self._engine.running:
+            if self._engine._stopping or not self._engine.running:
                 break
 
             # 최대 횟수 도달 판단
@@ -9995,7 +10024,7 @@ def _jobs_run_all(self):
                 _t_repeat.sleep(_gap)
 
             # 대기 중 엔진 stop 됐으면 종료
-            if not self._engine.running:
+            if self._engine._stopping or not self._engine.running:
                 break
 
     _th = _th_repeat.Thread(target=_repeat_loop, daemon=True,
