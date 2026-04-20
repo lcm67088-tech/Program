@@ -2257,9 +2257,9 @@ class App(tk.Tk):
         inner = tk.Frame(outer, bg=PALETTE["card"],
                          highlightbackground=PALETTE["border"],
                          highlightthickness=1)
-        inner.pack(fill="both", expand=True, padx=2, pady=2)
+        inner.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
         pad = tk.Frame(inner, bg=PALETTE["card"])
-        pad.pack(fill="both", expand=True, padx=padx, pady=pady)
+        pad.pack(fill=tk.BOTH, expand=True, padx=padx, pady=pady)
         return outer, pad
 
     def _button(self, parent, text, command, color=None,
@@ -13418,7 +13418,7 @@ class LoginDialog:
         FF = "Malgun Gothic" # 한글 폰트
 
         outer = tk.Frame(self.root, bg=P["bg"])
-        outer.pack(expand=True, fill="both", padx=36, pady=28)
+        outer.pack(expand=True, fill=tk.BOTH, padx=36, pady=28)
 
         # ── 제목 영역 ─────────────────────────────────────
         tk.Label(
@@ -13445,35 +13445,35 @@ class LoginDialog:
                 relief="solid", bd=1,
                 justify="left", wraplength=360,
                 padx=8, pady=6,
-            ).pack(fill="x", pady=(0, 14))
+            ).pack(fill=tk.X, pady=(0, 14))
 
         # ── ID 입력 행 ────────────────────────────────────
         row_id = tk.Frame(outer, bg=P["bg"])
-        row_id.pack(fill="x", pady=5)
+        row_id.pack(fill=tk.X, pady=5)
         tk.Label(
             row_id, text="ID", width=5, anchor="w",
             font=(FF, 10), bg=P["bg"], fg=P["muted"],
-        ).pack(side="left")
+        ).pack(side=tk.LEFT)
         self.id_var = tk.StringVar()
         tk.Entry(
             row_id, textvariable=self.id_var,
             font=(FF, 10),
             bg=P["card"], relief="solid", bd=1, width=28,
-        ).pack(side="left", padx=(4, 0))
+        ).pack(side=tk.LEFT, padx=(4, 0))
 
         # ── PW 입력 행 ────────────────────────────────────
         row_pw = tk.Frame(outer, bg=P["bg"])
-        row_pw.pack(fill="x", pady=5)
+        row_pw.pack(fill=tk.X, pady=5)
         tk.Label(
-            row_pw, text="PW", width=5, anchor="w",
+            row_pw, text="PW", width=5, anchor=tk.W,
             font=(FF, 10), bg=P["bg"], fg=P["muted"],
-        ).pack(side="left")
+        ).pack(side=tk.LEFT)
         self.pw_var = tk.StringVar()
         tk.Entry(
             row_pw, textvariable=self.pw_var, show="●",
             font=(FF, 10),
             bg=P["card"], relief="solid", bd=1, width=28,
-        ).pack(side="left", padx=(4, 0))
+        ).pack(side=tk.LEFT, padx=(4, 0))
 
         # ── 버튼 행 ───────────────────────────────────────
         row_btn = tk.Frame(outer, bg=P["bg"])
@@ -13486,17 +13486,17 @@ class LoginDialog:
             font=(FF, 10, "bold"),
             bg=P["primary"], fg="white",
             activebackground=P["primary2"], activeforeground="white",
-            relief="flat", padx=16, pady=7,
+            relief=tk.FLAT, padx=16, pady=7,
             cursor="hand2", state=login_state,
-        ).pack(side="left", padx=6)
+        ).pack(side=tk.LEFT, padx=6)
         tk.Button(
             row_btn, text="  종료  ",
             command=self._exit,
             font=(FF, 10),
             bg=P["border"], fg=P["muted"],
-            relief="flat", padx=16, pady=7,
+            relief=tk.FLAT, padx=16, pady=7,
             cursor="hand2",
-        ).pack(side="left", padx=6)
+        ).pack(side=tk.LEFT, padx=6)
 
         # ── 하단 안내 ─────────────────────────────────────
         tk.Label(
