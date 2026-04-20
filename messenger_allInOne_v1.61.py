@@ -4465,7 +4465,7 @@ class TemplateTab(tk.Frame):
                     ("최근메시지수", self._tg_api_capture_msgs),
                 ]:
                     _field(rC, lbl_t, var)
-                # 캡처 ON/OFF
+                # 캡처 ON/OFF + 웹 캡처 옵션 (v1.62)
                 self._tg_api_capture_on = tk.BooleanVar(
                     value=self._cur("tg_api_capture_on", True))
                 tk.Checkbutton(rC, text="발송 후 채팅 캡처 ON",
@@ -4475,6 +4475,22 @@ class TemplateTab(tk.Frame):
                                activebackground=PALETTE["card"],
                                font=F_LABEL
                                ).pack(side=tk.LEFT, padx=(10, 0))
+                # v1.62: 웹 캡처(PNG) 체크박스
+                self._tg_api_web_capture = tk.BooleanVar(
+                    value=self._cur("tg_api_web_capture", False))
+                tk.Checkbutton(rC,
+                               text="웹 캡처(PNG)  🌐",
+                               variable=self._tg_api_web_capture,
+                               bg=PALETTE["card"], fg=PALETTE["accent"],
+                               selectcolor=PALETTE["card2"],
+                               activebackground=PALETTE["card"],
+                               font=F_LABEL
+                               ).pack(side=tk.LEFT, padx=(12, 0))
+                tk.Label(rC,
+                         text="(Chrome+selenium 필요)",
+                         font=F_SMALL,
+                         bg=PALETTE["card"], fg=PALETTE["muted"]
+                         ).pack(side=tk.LEFT, padx=(2, 0))
 
                 # 행D: 링크 간격
                 rD = _row(card)
@@ -4643,6 +4659,7 @@ class TemplateTab(tk.Frame):
                 self._tg_api_capture_delay = tk.StringVar(value="2.0")
                 self._tg_api_capture_msgs  = tk.StringVar(value="5")
                 self._tg_api_capture_on    = tk.BooleanVar(value=False)
+                self._tg_api_web_capture   = tk.BooleanVar(value=False)  # v1.62
                 self._tg_api_acct_warmup   = tk.StringVar(value="0.5")
 
                 tk.Frame(card, bg=PALETTE["card"], height=4).pack()
@@ -5529,6 +5546,8 @@ class TemplateTab(tk.Frame):
                         data[_key] = _default
             if hasattr(self, "_tg_api_capture_on"):
                 data["tg_api_capture_on"] = bool(self._tg_api_capture_on.get())
+            if hasattr(self, "_tg_api_web_capture"):        # v1.62
+                data["tg_api_web_capture"] = bool(self._tg_api_web_capture.get())
             # ▶ Telethon 다계정 모드 저장
             if hasattr(self, "_account_mode_var"):
                 data["account_mode"] = self._account_mode_var.get()
@@ -7344,10 +7363,133 @@ class WorkflowExecutor:
             # 리포트에 파일명 기록
             if self._report_rows:
                 self._report_rows[-1]["비고"] += f" [채팅캡처:{fname}]"
+
+            # ── v1.62: 웹 캡처 (Selenium) ────────────────────────────────
+            # tg_api_web_capture ON이고 HAS_SELENIUM이면
+            # web.telegram.org 로 해당 채팅방 실제 화면을 PNG로 추가 저장
+            if self.tmpl.get("tg_api_web_capture", False):
+                web_path = self._tg_web_capture(peer, peer_safe, ts)
+                if web_path:
+                    if self._report_rows:
+                        self._report_rows[-1]["비고"] += f" [웹캡처:{web_path}]"
+
             return str(fpath)
 
         except Exception as _ce:
             self._log(f"  ⚠️ 채팅 캡처 실패: {_ce}", "WARN")
+            return ""
+
+    # ── v1.62: web.telegram.org 실제 채팅방 PNG 캡처 ────────────────────
+    def _tg_web_capture(self, peer: str, peer_safe: str, ts: str) -> str:
+        """Selenium으로 web.telegram.org 에서 실제 채팅방 화면을 PNG로 저장.
+
+        · peer      : @username 또는 t.me/xxx 형태
+        · peer_safe : 파일명용 정제된 peer
+        · ts        : 타임스탬프 문자열 (chatlog 와 동일 시각)
+        · 반환값    : 저장 파일 경로 (실패 시 '')
+
+        전제조건:
+          - Chrome + ChromeDriver 설치
+          - web.telegram.org 에 이미 로그인된 Chrome 프로필 사용
+            (--user-data-dir 로 기존 프로필 로드 → 재로그인 불필요)
+          - selenium 패키지 설치: pip install selenium
+        """
+        if not HAS_SELENIUM:
+            self._log("⚠️ 웹 캡처 불가: selenium 미설치 (pip install selenium)", "WARN")
+            return ""
+        try:
+            import os as _os
+
+            # ── Chrome 프로필 경로 (settings.json → 기본 Chrome 경로) ──────
+            _app_cfg = load_json(CONFIG_PATH, {}).get("tg_web", {})
+            chrome_profile = (
+                _app_cfg.get("chrome_profile", "")
+                or _os.path.expandvars(
+                    r"%LOCALAPPDATA%\Google\Chrome\User Data"
+                )
+            )
+            chrome_profile_dir = _app_cfg.get("chrome_profile_dir", "Default")
+
+            # ── peer → web.telegram.org URL 변환 ─────────────────────────
+            # @username  → https://web.telegram.org/k/#@username
+            # t.me/xxx   → https://web.telegram.org/k/#@xxx
+            # t.me/+hash → 초대링크 (그대로 사용)
+            raw = peer.strip()
+            if raw.startswith("https://t.me/+") or raw.startswith("t.me/+"):
+                # 비공개 초대링크 — username 없으므로 웹캡처 불가
+                self._log("⚠️ 웹 캡처: 비공개 초대링크는 웹 캡처 불가", "WARN")
+                return ""
+            elif raw.startswith("https://t.me/"):
+                uname = raw.replace("https://t.me/", "").split("/")[0]
+            elif raw.startswith("t.me/"):
+                uname = raw.replace("t.me/", "").split("/")[0]
+            elif raw.startswith("@"):
+                uname = raw[1:]
+            else:
+                uname = raw
+            web_url = f"https://web.telegram.org/k/#@{uname}"
+
+            # ── Chrome 옵션 ───────────────────────────────────────────────
+            opts = _ChromeOptions()
+            opts.add_argument("--headless=new")          # 백그라운드 실행
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--window-size=1280,900")
+            opts.add_argument("--disable-gpu")
+            opts.add_argument("--disable-extensions")
+            opts.add_argument("--disable-notifications")
+            opts.add_argument(f"--user-data-dir={chrome_profile}")
+            opts.add_argument(f"--profile-directory={chrome_profile_dir}")
+            # 로그 억제
+            opts.add_experimental_option("excludeSwitches", ["enable-logging"])
+            opts.add_argument("--log-level=3")
+
+            self._log(f"🌐 웹 캡처 시작: {web_url}", "INFO")
+
+            driver = _selenium_webdriver.Chrome(options=opts)
+            try:
+                driver.get(web_url)
+
+                # ── 채팅방 메시지 영역 로딩 대기 (최대 15초) ─────────────
+                # web.telegram.org/k 는 SPA — 메시지 버블이 렌더링될 때까지 대기
+                try:
+                    _selenium_Wait(driver, 15).until(
+                        _selenium_EC.presence_of_element_located(
+                            (_selenium_By.CSS_SELECTOR,
+                             ".bubbles-inner, .message, .bubble")
+                        )
+                    )
+                    # 추가 렌더링 여유 (이미지/이모지 로딩)
+                    time.sleep(2)
+                except Exception:
+                    # 타임아웃 시에도 현재 화면 캡처 시도
+                    self._log("⚠️ 웹 캡처: 메시지 로딩 타임아웃 — 현재 화면 저장", "WARN")
+                    time.sleep(3)
+
+                # ── 스크롤을 맨 아래로 (최신 메시지 보이게) ─────────────
+                try:
+                    driver.execute_script(
+                        "var el = document.querySelector('.bubbles-inner, .scrollable');"
+                        "if(el) el.scrollTop = el.scrollHeight;"
+                    )
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+
+                # ── PNG 저장 ──────────────────────────────────────────────
+                job_name = self.job.get("name", "job").replace(" ", "_")
+                fname_png = f"webcap_{job_name}_{peer_safe}_{ts}.png"
+                SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+                fpath_png = SCREENSHOTS_DIR / fname_png
+                driver.save_screenshot(str(fpath_png))
+                self._log(f"📸 웹 캡처 저장: {fname_png}", "INFO")
+                return fname_png
+
+            finally:
+                driver.quit()
+
+        except Exception as _we:
+            self._log(f"  ⚠️ 웹 캡처 실패: {_we}", "WARN")
             return ""
 
     def _capture_screen(self, reason: str = "periodic") -> str:
@@ -9833,6 +9975,16 @@ except ImportError:
     HAS_TELETHON = False
     _tl_errors = None
 
+try:
+    from selenium import webdriver as _selenium_webdriver
+    from selenium.webdriver.common.by import By as _selenium_By
+    from selenium.webdriver.support.ui import WebDriverWait as _selenium_Wait
+    from selenium.webdriver.support import expected_conditions as _selenium_EC
+    from selenium.webdriver.chrome.options import Options as _ChromeOptions
+    HAS_SELENIUM = True
+except ImportError:
+    HAS_SELENIUM = False
+
 # 텔레그램 계정 설정 저장 경로
 TG_ACCOUNTS_PATH = CONFIG_DIR / "tg_accounts.json"
 TG_SESSION_DIR   = APP_DIR / "TelegramAccounts"
@@ -11870,6 +12022,47 @@ class SettingsTab(tk.Frame):
                       ).pack(side=tk.LEFT, padx=(8, 0))
         row(c4, "저장 위치", _ss_dir_w)
 
+        # ── v1.62: 웹 캡처(Selenium) Chrome 프로필 설정 ──────────────────
+        c5 = card("🌐 웹 캡처 설정 (Selenium)")
+        self._tg_chrome_profile_var = tk.StringVar()
+        self._tg_chrome_profile_dir_var = tk.StringVar(value="Default")
+
+        def _chrome_profile_w(p):
+            tk.Entry(p, textvariable=self._tg_chrome_profile_var,
+                     width=40, relief=tk.FLAT,
+                     bg=PALETTE["card2"], fg=PALETTE["text"],
+                     insertbackground=PALETTE["text"],
+                     font=F_SMALL
+                     ).pack(side=tk.LEFT, padx=(0, 6))
+            tk.Label(p,
+                     text="(비워두면 Chrome 기본 경로 사용)",
+                     font=F_SMALL,
+                     bg=PALETTE["card"], fg=PALETTE["muted"]
+                     ).pack(side=tk.LEFT)
+        row(c5, "Chrome 프로필 경로", _chrome_profile_w)
+
+        def _chrome_dir_w(p):
+            tk.Entry(p, textvariable=self._tg_chrome_profile_dir_var,
+                     width=20, relief=tk.FLAT,
+                     bg=PALETTE["card2"], fg=PALETTE["text"],
+                     insertbackground=PALETTE["text"],
+                     font=F_SMALL
+                     ).pack(side=tk.LEFT, padx=(0, 6))
+            tk.Label(p,
+                     text="(예: Default, Profile 1, Profile 2 ...)",
+                     font=F_SMALL,
+                     bg=PALETTE["card"], fg=PALETTE["muted"]
+                     ).pack(side=tk.LEFT)
+        row(c5, "Chrome 프로필 디렉터리", _chrome_dir_w)
+
+        tk.Label(c5,
+                 text="⚠️  web.telegram.org 에 이미 로그인된 Chrome 프로필을 사용해야 합니다.\n"
+                      "    pip install selenium  및  ChromeDriver 설치 필요",
+                 font=F_SMALL,
+                 bg=PALETTE["card"], fg=PALETTE["muted"],
+                 justify=tk.LEFT
+                 ).pack(anchor=tk.W, padx=16, pady=(4, 8))
+
         # ── 저장 버튼 영역 ───────────────────────────────
         save_wrap = tk.Frame(inner, bg=PALETTE["card"],
                              highlightbackground=PALETTE["border"],
@@ -11925,6 +12118,10 @@ class SettingsTab(tk.Frame):
         self._ss_enabled_var.set(ss.get("enabled",  True))
         self._ss_interval_var.set(str(ss.get("interval_min", 60)))
         self._ss_on_error_var.set(ss.get("on_error", True))
+        # v1.62: 웹 캡처 Chrome 프로필 로드
+        _tgw = cfg.get("tg_web", {})
+        self._tg_chrome_profile_var.set(_tgw.get("chrome_profile", ""))
+        self._tg_chrome_profile_dir_var.set(_tgw.get("chrome_profile_dir", "Default"))
 
     def _save(self):
         cfg = self.app.config_data
@@ -11950,6 +12147,10 @@ class SettingsTab(tk.Frame):
         cfg["screenshot"]["interval_min"] = safe_float(
             self._ss_interval_var.get(), 60.0)
         cfg["screenshot"]["on_error"]     = self._ss_on_error_var.get()
+        # v1.62: 웹 캡처 Chrome 프로필 저장
+        cfg.setdefault("tg_web", {})
+        cfg["tg_web"]["chrome_profile"]     = self._tg_chrome_profile_var.get().strip()
+        cfg["tg_web"]["chrome_profile_dir"] = self._tg_chrome_profile_dir_var.get().strip() or "Default"
 
         # pyautogui failsafe 적용
         if HAS_PYAUTOGUI:
