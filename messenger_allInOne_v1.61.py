@@ -1660,10 +1660,24 @@ APP_DIR      = _app_dir()
 CONFIG_DIR   = APP_DIR / "Config"
 TEMPLATE_DIR = CONFIG_DIR / "templates"   # 작업 템플릿 저장
 JOBS_DIR     = CONFIG_DIR / "jobs"        # 작업 저장
-LOGS_DIR     = APP_DIR  / "logs"
-DATA_DIR     = APP_DIR  / "data"
+LOGS_DIR        = APP_DIR  / "logs"
+DATA_DIR        = APP_DIR  / "data"
+SCREENSHOTS_DIR = APP_DIR  / "screenshots"   # 스크린샷 저장 폴더
 
-for _d in (CONFIG_DIR, TEMPLATE_DIR, JOBS_DIR, LOGS_DIR, DATA_DIR):
+def _open_folder(path):
+    """탐색기(Windows) 또는 파인더(Mac)/파일관리자(Linux)로 폴더 열기"""
+    import subprocess as _sp, sys as _sys
+    try:
+        if _sys.platform == "win32":
+            import os as _os; _os.startfile(str(path))
+        elif _sys.platform == "darwin":
+            _sp.Popen(["open", str(path)])
+        else:
+            _sp.Popen(["xdg-open", str(path)])
+    except Exception:
+        pass
+
+for _d in (CONFIG_DIR, TEMPLATE_DIR, JOBS_DIR, LOGS_DIR, DATA_DIR, SCREENSHOTS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 CONFIG_PATH = CONFIG_DIR / "config.json"
@@ -2133,6 +2147,12 @@ class App(tk.Tk):
             "global_delay": {
                 "min": 2.0,
                 "max": 5.0,
+            },
+            # 스크린샷 캡처 설정
+            "screenshot": {
+                "enabled":      True,   # 캡처 기능 ON/OFF
+                "interval_min": 60.0,   # 주기적 캡처 간격 (초, 기본 60초=1분)
+                "on_error":     True,   # 오류 발생 시 즉시 캡처
             },
             # Telegram API 앱 인증 정보 — 계정 공통 (my.telegram.org 에서 1회 발급)
             "tg_api": {
@@ -6679,6 +6699,15 @@ class WorkflowExecutor:
         self._fail      = 0
         self._report_rows: list[dict] = []   # 발행 결과 행 (리포트용)
         self._started_at = None              # 실행 시작 시각
+
+        # ── 스크린샷 설정 읽기 ─────────────────────────────
+        _ss_cfg = load_json(CONFIG_PATH, {}).get("screenshot", {})
+        self._ss_enabled  : bool  = _ss_cfg.get("enabled",  True)
+        self._ss_interval : float = float(_ss_cfg.get("interval_min", 60.0))  # 초
+        self._ss_on_error : bool  = _ss_cfg.get("on_error", True)
+        self._ss_last_ts  : float = 0.0       # 마지막 주기적 캡처 시각(time.time())
+        self._ss_timer_stop = threading.Event()  # 타이머 스레드 종료 신호
+
         # ★ 실행 시작 시 FAILSAFE 설정 적용 (설정탭 값 반영)
         if HAS_PYAUTOGUI:
             try:
@@ -6803,6 +6832,64 @@ class WorkflowExecutor:
         self._log(f"직접 입력 목록 {len(rows)}개 로드", "INFO")
         return rows
 
+    # ── 스크린샷 캡처 ────────────────────────────────────────
+    def _capture_screen(self, reason: str = "periodic") -> str:
+        """현재 화면을 캡처해 screenshots/ 에 저장. 저장 경로 반환(실패 시 '').
+
+        reason: 'periodic' | 'error' | 'manual'
+        파일명: screenshot_{작업명}_{reason}_{YYYYMMDD_HHMMSS}.png
+        """
+        if not self._ss_enabled:
+            return ""
+        try:
+            import datetime as _dt
+            # PIL.ImageGrab 우선, 없으면 pyautogui.screenshot
+            try:
+                from PIL import ImageGrab as _IG
+                img = _IG.grab()
+            except Exception:
+                if HAS_PYAUTOGUI:
+                    img = pyautogui.screenshot()
+                else:
+                    self._log("⚠️ 스크린샷: PIL/pyautogui 모두 없음", "WARN")
+                    return ""
+
+            job_name = self.job.get("name", "job").replace(" ", "_")
+            ts       = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            fname    = f"screenshot_{job_name}_{reason}_{ts}.png"
+            fpath    = SCREENSHOTS_DIR / fname
+            img.save(str(fpath), "PNG")
+            self._log(f"📸 스크린샷 저장: {fname}", "INFO")
+            # 리포트에도 기록
+            if self._report_rows:
+                self._report_rows[-1]["비고"] += f" [캡처:{fname}]"
+            return str(fpath)
+        except Exception as _se:
+            self._log(f"⚠️ 스크린샷 실패: {_se}", "WARN")
+            return ""
+
+    def _start_periodic_capture(self):
+        """백그라운드 스레드로 주기적 스크린샷 실행 (interval_min 초 간격)"""
+        if not self._ss_enabled:
+            return
+        def _loop():
+            import time as _t
+            while not self._ss_timer_stop.is_set():
+                # stop_event 대기 (interval 초 또는 중지 신호)
+                stopped = self._ss_timer_stop.wait(timeout=self._ss_interval)
+                if stopped:
+                    break
+                if self._is_stopped():
+                    break
+                self._capture_screen("periodic")
+        t = threading.Thread(target=_loop,
+                             name="ss-periodic", daemon=True)
+        t.start()
+
+    def _stop_periodic_capture(self):
+        """주기적 캡처 스레드 종료"""
+        self._ss_timer_stop.set()
+
     # ── 메인 실행 진입점 ─────────────────────────────────────
     def _record(self, target: str, status: str, note: str = ""):
         """발행 결과를 리포트 버퍼에 기록"""
@@ -6869,12 +6956,22 @@ class WorkflowExecutor:
             self._log(f"알 수 없는 작업유형: {self.wk}", "ERROR")
             self._done(0, 1)
             return
+
+        # ★ 시작 캡처 + 주기적 캡처 스레드 시작
+        self._capture_screen("start")
+        self._start_periodic_capture()
+
         try:
             fn()
         except Exception as e:
             self._log(f"실행 중 오류: {e}", "ERROR")
+            # ★ 예외 발생 시 즉시 캡처
+            if self._ss_on_error:
+                self._capture_screen("error")
         finally:
-            self._save_report()      # ★ 실행 완료 시 자동 리포트 저장
+            self._stop_periodic_capture()    # 주기적 캡처 스레드 종료
+            self._capture_screen("finish")   # 완료 시 최종 캡처
+            self._save_report()              # ★ 실행 완료 시 자동 리포트 저장
             self._done(self._succ, self._fail)
 
     # ════════════════════════════════════════════════════════
@@ -7391,10 +7488,12 @@ class WorkflowExecutor:
                 self._fail += 1
                 self._log("  ❌ FailSafe 발동 → 작업 중단", "ERROR")
                 self._log("  💡 마우스를 화면 중앙에 두고 재실행하세요.", "WARN")
+                if self._ss_on_error: self._capture_screen("error_failsafe")
                 break
             except Exception as e:
                 self._fail += 1
                 self._log(f"  ❌ 실패: {e}", "ERROR")
+                if self._ss_on_error: self._capture_screen("error")
                 try:
                     mx, my = pyautogui.position()
                     sw = pyautogui.size()
@@ -7824,6 +7923,7 @@ class WorkflowExecutor:
             except Exception as e:
                 self._fail += 1
                 self._log(f"  ❌ 오류: {e}", "ERROR")
+                if self._ss_on_error: self._capture_screen("error")
                 try: pyautogui.press("escape")
                 except: pass
 
@@ -11097,6 +11197,67 @@ class SettingsTab(tk.Frame):
                      ).pack(side=tk.LEFT)
         row(c3, "항목 간 딜레이", _gd_w)
 
+        # ── 스크린샷 캡처 설정 ───────────────────────────
+        c4 = card("📸 스크린샷 캡처 설정")
+        self._ss_enabled_var  = tk.BooleanVar(value=True)
+        self._ss_interval_var = tk.StringVar(value="60")
+        self._ss_on_error_var = tk.BooleanVar(value=True)
+
+        def _ss_enabled_w(p):
+            tk.Checkbutton(
+                p, text="캡처 기능 활성화",
+                variable=self._ss_enabled_var,
+                font=F_LABEL,
+                bg=PALETTE["card"], fg=PALETTE["text"],
+                selectcolor=PALETTE["card2"],
+                activebackground=PALETTE["card"]
+            ).pack(side=tk.LEFT)
+        row(c4, "활성화", _ss_enabled_w)
+
+        def _ss_interval_w(p):
+            tk.Entry(p, textvariable=self._ss_interval_var,
+                     width=6, relief=tk.FLAT,
+                     bg=PALETTE["card2"], fg=PALETTE["text"],
+                     insertbackground=PALETTE["text"],
+                     font=F_MONO
+                     ).pack(side=tk.LEFT, padx=(0, 6))
+            tk.Label(p, text="초마다 자동 캡처  (예: 60=1분, 3600=1시간)",
+                     font=F_SMALL,
+                     bg=PALETTE["card"], fg=PALETTE["muted"]
+                     ).pack(side=tk.LEFT)
+        row(c4, "주기적 캡처 간격", _ss_interval_w)
+
+        def _ss_error_w(p):
+            tk.Checkbutton(
+                p, text="오류 발생 시 즉시 캡처",
+                variable=self._ss_on_error_var,
+                font=F_LABEL,
+                bg=PALETTE["card"], fg=PALETTE["text"],
+                selectcolor=PALETTE["card2"],
+                activebackground=PALETTE["card"]
+            ).pack(side=tk.LEFT)
+            tk.Label(p,
+                     text="(실패 항목·FailSafe 등)",
+                     font=F_SMALL,
+                     bg=PALETTE["card"], fg=PALETTE["muted"]
+                     ).pack(side=tk.LEFT, padx=(8, 0))
+        row(c4, "오류 캡처", _ss_error_w)
+
+        # 저장 폴더 표시
+        def _ss_dir_w(p):
+            tk.Label(p,
+                     text=str(SCREENSHOTS_DIR),
+                     font=F_SMALL,
+                     bg=PALETTE["card"], fg=PALETTE["muted"]
+                     ).pack(side=tk.LEFT)
+            tk.Button(p, text="📂 열기",
+                      command=lambda: _open_folder(SCREENSHOTS_DIR),
+                      bg=PALETTE["hover"], fg=PALETTE["text"],
+                      relief=tk.FLAT, cursor="hand2",
+                      font=F_SMALL, padx=6
+                      ).pack(side=tk.LEFT, padx=(8, 0))
+        row(c4, "저장 위치", _ss_dir_w)
+
         # ── 저장 버튼 영역 ───────────────────────────────
         save_wrap = tk.Frame(inner, bg=PALETTE["card"],
                              highlightbackground=PALETTE["border"],
@@ -11131,6 +11292,7 @@ class SettingsTab(tk.Frame):
         p   = cfg.get("paths", {})
         m   = cfg.get("mouse", {})
         g   = cfg.get("global_delay", {})
+        ss  = cfg.get("screenshot", {})
         self._log_dir_var.set(
             p.get("logs",  str(LOGS_DIR)))
         self._out_dir_var.set(
@@ -11147,6 +11309,10 @@ class SettingsTab(tk.Frame):
             str(g.get("min", 2.0)))
         self._gd_max_var.set(
             str(g.get("max", 5.0)))
+        # 스크린샷 설정 로드
+        self._ss_enabled_var.set(ss.get("enabled",  True))
+        self._ss_interval_var.set(str(ss.get("interval_min", 60)))
+        self._ss_on_error_var.set(ss.get("on_error", True))
 
     def _save(self):
         cfg = self.app.config_data
@@ -11166,6 +11332,12 @@ class SettingsTab(tk.Frame):
             safe_float(self._gd_min_var.get(), 2.0)
         cfg["global_delay"]["max"]  = \
             safe_float(self._gd_max_var.get(), 5.0)
+        # 스크린샷 설정 저장
+        cfg.setdefault("screenshot", {})
+        cfg["screenshot"]["enabled"]      = self._ss_enabled_var.get()
+        cfg["screenshot"]["interval_min"] = safe_float(
+            self._ss_interval_var.get(), 60.0)
+        cfg["screenshot"]["on_error"]     = self._ss_on_error_var.get()
 
         # pyautogui failsafe 적용
         if HAS_PYAUTOGUI:
