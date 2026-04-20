@@ -3337,6 +3337,12 @@ class TemplateTab(tk.Frame):
         # 카카오:   file/dragdrop
         _wk_now = self._wtype_var.get()
         _is_tg  = _wk_now == "telegram_message"
+        # Telethon API 모드 여부: Telethon 설치 + 계정 존재 시 True
+        _is_tg_api = (
+            _is_tg
+            and HAS_TELETHON
+            and bool(load_json(TG_ACCOUNTS_PATH, []))
+        )
         _img_mode_default = self._cur("image_mode", "none" if _is_tg else "file")
         self._img_mode_var = tk.StringVar(value=_img_mode_default)
         if _is_tg:
@@ -3360,85 +3366,110 @@ class TemplateTab(tk.Frame):
                 command=self._toggle_image_path,
             ).pack(side=tk.LEFT, padx=(0, 20))
 
-        # ── 텔레그램 전용: 파일첨부 버튼 좌표 ──────────────────
-        # 파일경로 모드일 때만 표시 (_toggle_image_path 에서 제어)
+        # ── 텔레그램 전용: 파일첨부 버튼 좌표 / Telethon API 안내 ──────────────────
+        # · Telethon API 모드(계정 있음): 좌표 불필요 → 안내 배너만 표시
+        # · pyautogui 폴백 모드: 좌표 입력 필요 → 좌표 행 표시
         if _is_tg:
-            self._tg_attach_row = tk.Frame(card, bg=PALETTE["card"])
-            # 초기에는 숨김 (pack 안 함) — _toggle_image_path 에서 표시
-            tk.Label(self._tg_attach_row, text="첨부버튼 좌표",
-                     width=14, anchor=tk.W,
-                     font=F_LABEL, bg=PALETTE["card"],
-                     fg=PALETTE["accent"]).pack(side=tk.LEFT)
-            self._tg_attach_x = tk.StringVar(
-                value=str(self._cur("tg_attach_btn_coord", {}).get("x", 0)))
-            self._tg_attach_y = tk.StringVar(
-                value=str(self._cur("tg_attach_btn_coord", {}).get("y", 0)))
-            for lbl_t, var in [("X:", self._tg_attach_x),
-                                ("Y:", self._tg_attach_y)]:
-                tk.Label(self._tg_attach_row, text=lbl_t, font=F_MONO_S,
-                         bg=PALETTE["card"], fg=PALETTE["text"]
+            if _is_tg_api:
+                # ── Telethon API 모드: 파일은 API로 직접 전송 → 좌표 불필요 ──
+                _api_banner = tk.Frame(card, bg="#D1FAE5",
+                                       highlightbackground="#6EE7B7",
+                                       highlightthickness=1)
+                _api_banner.pack(fill=tk.X, padx=12, pady=(4, 8))
+                tk.Label(_api_banner,
+                         text="📡  Telethon API 모드 — 파일 경로 선택 시\n"
+                              "    좌표(첨부버튼/파일명 입력란)가 필요 없습니다.\n"
+                              "    API가 직접 파일을 전송합니다.",
+                         font=F_SMALL, bg="#D1FAE5",
+                         fg="#065F46", padx=10, pady=8, justify="left"
+                         ).pack(anchor="w")
+                # _toggle_image_path 에서 참조하므로 더미 Frame 생성 (pack 안 함)
+                self._tg_attach_row   = tk.Frame(card, bg=PALETTE["card"])
+                self._tg_filename_row = tk.Frame(card, bg=PALETTE["card"])
+                self._tg_attach_x   = tk.StringVar(value="0")
+                self._tg_attach_y   = tk.StringVar(value="0")
+                self._tg_fname_x    = tk.StringVar(value="0")
+                self._tg_fname_y    = tk.StringVar(value="0")
+                self._tg_attach_disp = tk.Label(self._tg_attach_row)
+                self._tg_fname_disp  = tk.Label(self._tg_filename_row)
+            else:
+                # ── pyautogui 폴백 모드: 좌표 입력 필요 ──
+                self._tg_attach_row = tk.Frame(card, bg=PALETTE["card"])
+                # 초기에는 숨김 (pack 안 함) — _toggle_image_path 에서 표시
+                tk.Label(self._tg_attach_row, text="첨부버튼 좌표",
+                         width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"],
+                         fg=PALETTE["accent"]).pack(side=tk.LEFT)
+                self._tg_attach_x = tk.StringVar(
+                    value=str(self._cur("tg_attach_btn_coord", {}).get("x", 0)))
+                self._tg_attach_y = tk.StringVar(
+                    value=str(self._cur("tg_attach_btn_coord", {}).get("y", 0)))
+                for lbl_t, var in [("X:", self._tg_attach_x),
+                                    ("Y:", self._tg_attach_y)]:
+                    tk.Label(self._tg_attach_row, text=lbl_t, font=F_MONO_S,
+                             bg=PALETTE["card"], fg=PALETTE["text"]
+                             ).pack(side=tk.LEFT, padx=(4, 0))
+                    tk.Entry(self._tg_attach_row, textvariable=var,
+                             width=6, bg=PALETTE["card2"], fg=PALETTE["text"],
+                             insertbackground=PALETTE["text"],
+                             relief=tk.FLAT, font=F_MONO
+                             ).pack(side=tk.LEFT)
+                self._tg_attach_disp = tk.Label(self._tg_attach_row, text="",
+                    font=F_MONO_S, bg=PALETTE["card"], fg=PALETTE["success_text"])
+                self._tg_attach_disp.pack(side=tk.LEFT, padx=(6, 0))
+                tk.Button(self._tg_attach_row, text="📸 캡처",
+                          command=lambda: self._capture_point(
+                              "tg_attach_btn_coord",
+                              self._tg_attach_x, self._tg_attach_y,
+                              self._tg_attach_disp),
+                          bg=PALETTE["accent"], fg="#FFFFFF",
+                          relief=tk.FLAT, font=F_SMALL,
+                          cursor="hand2", padx=8, pady=3, bd=0
+                          ).pack(side=tk.LEFT, padx=(8, 0))
+                tk.Label(self._tg_attach_row,
+                         text=" ← 파일경로 모드 시 필수 (pyautogui 모드)",
+                         font=F_SMALL, bg=PALETTE["card"],
+                         fg=PALETTE["warning_text"]
                          ).pack(side=tk.LEFT, padx=(4, 0))
-                tk.Entry(self._tg_attach_row, textvariable=var,
-                         width=6, bg=PALETTE["card2"], fg=PALETTE["text"],
-                         insertbackground=PALETTE["text"],
-                         relief=tk.FLAT, font=F_MONO
-                         ).pack(side=tk.LEFT)
-            self._tg_attach_disp = tk.Label(self._tg_attach_row, text="",
-                font=F_MONO_S, bg=PALETTE["card"], fg=PALETTE["success_text"])
-            self._tg_attach_disp.pack(side=tk.LEFT, padx=(6, 0))
-            tk.Button(self._tg_attach_row, text="📸 캡처",
-                      command=lambda: self._capture_point(
-                          "tg_attach_btn_coord",
-                          self._tg_attach_x, self._tg_attach_y,
-                          self._tg_attach_disp),
-                      bg=PALETTE["accent"], fg="#FFFFFF",
-                      relief=tk.FLAT, font=F_SMALL,
-                      cursor="hand2", padx=8, pady=3, bd=0
-                      ).pack(side=tk.LEFT, padx=(8, 0))
-            tk.Label(self._tg_attach_row,
-                     text=" ← 파일경로 모드 시 필수",
-                     font=F_SMALL, bg=PALETTE["card"],
-                     fg=PALETTE["warning_text"]
-                     ).pack(side=tk.LEFT, padx=(4, 0))
 
-            # ── 텔레그램 전용: 파일명 입력란 좌표 ──────────────
-            self._tg_filename_row = tk.Frame(card, bg=PALETTE["card"])
-            # 초기에는 숨김 (_toggle_image_path 에서 표시)
-            tk.Label(self._tg_filename_row, text="파일명입력 좌표",
-                     width=14, anchor=tk.W,
-                     font=F_LABEL, bg=PALETTE["card"],
-                     fg=PALETTE["accent"]).pack(side=tk.LEFT)
-            self._tg_fname_x = tk.StringVar(
-                value=str(self._cur("tg_filename_input_coord", {}).get("x", 0)))
-            self._tg_fname_y = tk.StringVar(
-                value=str(self._cur("tg_filename_input_coord", {}).get("y", 0)))
-            for lbl_t, var in [("X:", self._tg_fname_x),
-                                ("Y:", self._tg_fname_y)]:
-                tk.Label(self._tg_filename_row, text=lbl_t, font=F_MONO_S,
-                         bg=PALETTE["card"], fg=PALETTE["text"]
+                # ── 텔레그램 전용: 파일명 입력란 좌표 ──────────────
+                self._tg_filename_row = tk.Frame(card, bg=PALETTE["card"])
+                # 초기에는 숨김 (_toggle_image_path 에서 표시)
+                tk.Label(self._tg_filename_row, text="파일명입력 좌표",
+                         width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"],
+                         fg=PALETTE["accent"]).pack(side=tk.LEFT)
+                self._tg_fname_x = tk.StringVar(
+                    value=str(self._cur("tg_filename_input_coord", {}).get("x", 0)))
+                self._tg_fname_y = tk.StringVar(
+                    value=str(self._cur("tg_filename_input_coord", {}).get("y", 0)))
+                for lbl_t, var in [("X:", self._tg_fname_x),
+                                    ("Y:", self._tg_fname_y)]:
+                    tk.Label(self._tg_filename_row, text=lbl_t, font=F_MONO_S,
+                             bg=PALETTE["card"], fg=PALETTE["text"]
+                             ).pack(side=tk.LEFT, padx=(4, 0))
+                    tk.Entry(self._tg_filename_row, textvariable=var,
+                             width=6, bg=PALETTE["card2"], fg=PALETTE["text"],
+                             insertbackground=PALETTE["text"],
+                             relief=tk.FLAT, font=F_MONO
+                             ).pack(side=tk.LEFT)
+                self._tg_fname_disp = tk.Label(self._tg_filename_row, text="",
+                    font=F_MONO_S, bg=PALETTE["card"], fg=PALETTE["success_text"])
+                self._tg_fname_disp.pack(side=tk.LEFT, padx=(6, 0))
+                tk.Button(self._tg_filename_row, text="📸 캡처",
+                          command=lambda: self._capture_point(
+                              "tg_filename_input_coord",
+                              self._tg_fname_x, self._tg_fname_y,
+                              self._tg_fname_disp),
+                          bg=PALETTE["accent"], fg="#FFFFFF",
+                          relief=tk.FLAT, font=F_SMALL,
+                          cursor="hand2", padx=8, pady=3, bd=0
+                          ).pack(side=tk.LEFT, padx=(8, 0))
+                tk.Label(self._tg_filename_row,
+                         text=" ← 파일명 입력란 클릭 좌표 (pyautogui 모드)",
+                         font=F_SMALL, bg=PALETTE["card"],
+                         fg=PALETTE["warning_text"]
                          ).pack(side=tk.LEFT, padx=(4, 0))
-                tk.Entry(self._tg_filename_row, textvariable=var,
-                         width=6, bg=PALETTE["card2"], fg=PALETTE["text"],
-                         insertbackground=PALETTE["text"],
-                         relief=tk.FLAT, font=F_MONO
-                         ).pack(side=tk.LEFT)
-            self._tg_fname_disp = tk.Label(self._tg_filename_row, text="",
-                font=F_MONO_S, bg=PALETTE["card"], fg=PALETTE["success_text"])
-            self._tg_fname_disp.pack(side=tk.LEFT, padx=(6, 0))
-            tk.Button(self._tg_filename_row, text="📸 캡처",
-                      command=lambda: self._capture_point(
-                          "tg_filename_input_coord",
-                          self._tg_fname_x, self._tg_fname_y,
-                          self._tg_fname_disp),
-                      bg=PALETTE["accent"], fg="#FFFFFF",
-                      relief=tk.FLAT, font=F_SMALL,
-                      cursor="hand2", padx=8, pady=3, bd=0
-                      ).pack(side=tk.LEFT, padx=(8, 0))
-            tk.Label(self._tg_filename_row,
-                     text=" ← 파일명 입력란 클릭 좌표",
-                     font=F_SMALL, bg=PALETTE["card"],
-                     fg=PALETTE["warning_text"]
-                     ).pack(side=tk.LEFT, padx=(4, 0))
 
         # ── 이미지 파일 경로 (파일경로 방식) ──────────────────
         self._img_path_row = tk.Frame(card, bg=PALETTE["card"])
@@ -3745,7 +3776,13 @@ class TemplateTab(tk.Frame):
         _apply("_img_drop_row", tk.NORMAL if show_dd else tk.DISABLED)
 
         # ── 텔레그램 전용: 첨부버튼/파일명 좌표 행 ───────────────────
-        show_tg_file = use and mode == "file"
+        # Telethon API 모드(계정 있음)에서는 좌표 행을 절대 표시하지 않음
+        # (API가 직접 파일을 전송하므로 좌표 불필요)
+        _is_tg_api_now = (
+            HAS_TELETHON
+            and bool(load_json(TG_ACCOUNTS_PATH, []))
+        )
+        show_tg_file = use and mode == "file" and not _is_tg_api_now
         _show_row("_tg_attach_row",   show_tg_file, pady=(0, 4))
         _show_row("_tg_filename_row", show_tg_file, pady=(0, 4))
 
@@ -7941,10 +7978,30 @@ class WorkflowExecutor:
         if not message:
             self._log("메시지가 비어 있습니다.", "ERROR"); return
 
+        # ── 이미지 첨부 설정 읽기 (Telethon API 모드: 좌표 불필요) ──────
+        use_img  = self.tmpl.get("use_image", False)
+        img_mode = self.tmpl.get("image_mode", "none")
+        img_path = self.tmpl.get("image_path", "").strip() if use_img else ""
+        # Telethon 모드에서는 "file" 방식만 지원 (clipboard는 pyautogui 전용)
+        if use_img and img_mode == "file" and img_path:
+            import os as _os
+            if not _os.path.isfile(img_path):
+                self._log(f"⚠️ 이미지 파일 없음: {img_path} — 이미지 없이 진행", "WARN")
+                img_path = ""
+            else:
+                self._log(f"📎 이미지 첨부 모드: {img_path}", "INFO")
+        elif use_img and img_mode == "clipboard":
+            self._log("⚠️ Telethon 모드에서 클립보드 첨부는 지원되지 않습니다. "
+                      "파일 경로 방식을 사용하세요.", "WARN")
+            img_path = ""
+        else:
+            img_path = ""
+
         mode = self.tmpl.get("account_mode", "zigzag")
         self._log(
             f"[Telethon] 메시지 발송 시작 — 총 {total}명 / "
-            f"계정 {len(accounts)}개 / 모드: {mode}", "INFO")
+            f"계정 {len(accounts)}개 / 모드: {mode}"
+            + (f" / 이미지: {img_path}" if img_path else ""), "INFO")
 
         def _log_fn(msg, lv="INFO"):
             self._log(msg, lv)
@@ -7978,7 +8035,8 @@ class WorkflowExecutor:
                 acct = active_accounts[idx % n_accts]
                 msg  = self._apply_vars(message, row)
                 self._log(f"[{idx+1}/{total}] [{acct['name']}] → {peer}")
-                ok = eng.send_message(acct, peer, msg, self._stop)
+                ok = eng.send_message(acct, peer, msg, self._stop,
+                                      img_path=img_path)
                 if ok:
                     self._succ += 1
                     self._record(peer, "성공")
@@ -8011,9 +8069,16 @@ class WorkflowExecutor:
                     self._progress(abs_idx+1, total)
                     msg = self._apply_vars(message, row)
                     self._log(f"[{abs_idx+1}/{total}] [{acct['name']}] → {peer}")
-                    ok = eng.send_message(acct, peer, msg, self._stop)
-                    if ok: self._succ += 1
-                    else:  self._fail += 1
+                    ok = eng.send_message(acct, peer, msg, self._stop,
+                                          img_path=img_path)
+                    if ok:
+                        self._succ += 1
+                        self._record(peer, "성공")
+                        if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
+                    else:
+                        self._fail += 1
+                        self._record(peer, "실패")
+                        if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
                     if self._sleep_or_stop(
                             random.uniform(tg_min, tg_max)): break
 
@@ -8030,9 +8095,16 @@ class WorkflowExecutor:
                         self._fail += 1; continue
                     self._progress(idx+1, total)
                     msg = self._apply_vars(message, row)
-                    ok = eng.send_message(acct, peer, msg, self._stop)
-                    if ok: self._succ += 1
-                    else:  self._fail += 1
+                    ok = eng.send_message(acct, peer, msg, self._stop,
+                                          img_path=img_path)
+                    if ok:
+                        self._succ += 1
+                        self._record(peer, "성공")
+                        if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
+                    else:
+                        self._fail += 1
+                        self._record(peer, "실패")
+                        if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
                     if self._sleep_or_stop(
                             random.uniform(tg_min, tg_max)): break
                 if self._sleep_or_stop(sw_dly): break
@@ -9525,8 +9597,12 @@ class TelethonEngine:
             return self._handle_error(phone, e, link)
 
     def send_message(self, acct: dict, peer: str, message: str,
-                     stop_event: threading.Event = None) -> bool:
-        """메시지 전송  [TG-1]"""
+                     stop_event: threading.Event = None,
+                     img_path: str = "") -> bool:
+        """메시지 전송  [TG-1]
+        img_path: 이미지 파일 경로 (비어 있으면 텍스트만 전송)
+                  Telethon API 모드에서는 좌표 없이 직접 파일 전송 가능
+        """
         if not HAS_TELETHON:
             self._log_fn("telethon 미설치", "ERROR"); return False
 
@@ -9543,6 +9619,12 @@ class TelethonEngine:
             self._log_fn(f"[TG:{phone}] ⚠️ 일일 한도 초과 ({daily_limit}건)", "WARN")
             return False
 
+        # 이미지 파일 유효성 확인
+        _img = img_path.strip() if img_path else ""
+        if _img and not __import__("os").path.isfile(_img):
+            self._log_fn(f"[TG:{phone}] ⚠️ 이미지 파일 없음: {_img} — 텍스트만 전송", "WARN")
+            _img = ""
+
         try:
             client, loop = self._ensure_client(acct)
             self._start_loop_thread(phone, loop)
@@ -9551,7 +9633,13 @@ class TelethonEngine:
             async def _do_send():
                 if not client.is_connected():
                     await client.connect()
-                await client.send_message(peer, message)
+                if _img:
+                    # 이미지 + 메시지 동시 전송 (Telethon send_file)
+                    await client.send_file(peer, _img,
+                                           caption=message if message else None)
+                    self._log_fn(f"[TG:{phone}] 📎 이미지 첨부 전송 → {peer}")
+                else:
+                    await client.send_message(peer, message)
 
             self._retry_run(phone, loop, _do_send, peer, stop_event)
             with self._lock:
