@@ -7,3 +7,11 @@ node_modules/
 *.log
 .DS_Store
 .github/
+
+# Telegram API 인증 정보 (개인 정보 보호 — 절대 커밋 금지)
+Config/config.json
+Config/stats.json
+Config/tg_accounts.json
+Config/TelegramAccounts/
+__pycache__/
+*.pyc
