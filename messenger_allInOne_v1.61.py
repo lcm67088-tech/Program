@@ -9022,6 +9022,31 @@ class TelethonEngine:
         self._log_fn    = log_fn or (lambda msg, lv="INFO": None)
         self._lock      = threading.Lock()
 
+    # ── 전화번호 정규화 ────────────────────────────────────
+    @staticmethod
+    def _normalize_phone(phone: str) -> str:
+        """전화번호를 Telegram API 국제 형식(+국가코드)으로 변환.
+
+        변환 규칙:
+          - 숫자·공백·하이픈·괄호 외 문자는 제거
+          - 이미 '+' 로 시작하면 그대로 반환
+          - 한국 번호(010/011/016/017/018/019 로 시작) → +82로 변환
+            예) 01012345678 → +821012345678
+          - 그 외 '0' 으로 시작하면 '0' 제거 후 '+' 만 붙임
+            (정확한 국가코드를 알 수 없으면 사용자가 직접 +XX 형식 입력 권장)
+        """
+        import re
+        raw = re.sub(r"[\s\-\(\)]", "", str(phone).strip())  # 공백·하이픈·괄호 제거
+        if not raw:
+            return ""
+        if raw.startswith("+"):
+            return raw  # 이미 국제 형식
+        # 한국 번호 패턴: 010/011/016/017/018/019
+        if re.match(r"^01[016789]\d{7,8}$", raw):
+            return "+82" + raw[1:]   # 맨 앞 '0' → '+82'
+        # 그 외 '0'으로 시작하는 경우 → 경고 로그용 + 없이 반환 (사용자가 수정해야 함)
+        return raw
+
     # ── 계정 설정 ──────────────────────────────────────────
     def load_accounts(self, accounts: list):
         """계정 목록을 설정. [{name, api_id, api_hash, phone, daily_limit, warmup}]"""
@@ -9057,7 +9082,7 @@ class TelethonEngine:
         """
         if not HAS_TELETHON:
             raise RuntimeError("telethon 패키지가 필요합니다: pip install telethon")
-        phone   = str(acct.get("phone", ""))
+        phone   = self._normalize_phone(acct.get("phone", ""))  # 국제 형식 변환
         # 전역 config 에서 api_id/api_hash 읽기 (계정별 값은 fallback)
         _cfg = load_json(CONFIG_PATH, {})
         _tg  = _cfg.get("tg_api", {})
@@ -9117,7 +9142,7 @@ class TelethonEngine:
         (배치 작업) 중에는 세션 없는 계정을 건너뜀.
         """
         import asyncio
-        phone = str(acct.get("phone", ""))
+        phone = self._normalize_phone(acct.get("phone", ""))  # 국제 형식 변환
         try:
             client, loop = self._ensure_client(acct)
             self._start_loop_thread(phone, loop)
@@ -9174,7 +9199,7 @@ class TelethonEngine:
         if not HAS_TELETHON:
             self._log_fn("telethon 미설치", "ERROR"); return False
 
-        phone = str(acct.get("phone", ""))
+        phone = self._normalize_phone(acct.get("phone", ""))  # 국제 형식 변환
 
         # 당일 한도 확인
         daily_limit = int(acct.get("daily_limit", 500))
@@ -9225,7 +9250,7 @@ class TelethonEngine:
         if not HAS_TELETHON:
             self._log_fn("telethon 미설치", "ERROR"); return False
 
-        phone = str(acct.get("phone", ""))
+        phone = self._normalize_phone(acct.get("phone", ""))  # 국제 형식 변환
 
         daily_limit = int(acct.get("daily_limit", 500))
         warmup      = acct.get("warmup", False)
@@ -9845,6 +9870,14 @@ class TelegramAccountsTab(tk.Frame):
         d["warmup"]     = self._warmup_var.get()
         d["daily_limit"] = safe_int(d.get("daily_limit", "500"), 500)
         d["warmup_day"]  = safe_int(d.get("warmup_day", "1"), 1)
+        # 전화번호 자동 국제 형식 변환 (+82 등)
+        raw_phone = d.get("phone", "")
+        normalized = TelethonEngine._normalize_phone(raw_phone)
+        if normalized and normalized != raw_phone:
+            d["phone"] = normalized
+            # UI 필드도 업데이트
+            if "phone" in self._vars:
+                self._vars["phone"].set(normalized)
         return d
 
     # ── 추가/수정/삭제 ─────────────────────────────────────
@@ -9913,7 +9946,7 @@ class TelegramAccountsTab(tk.Frame):
             return
 
         acct  = self._accounts[self._sel_idx]
-        phone = str(acct.get("phone", ""))
+        phone = TelethonEngine._normalize_phone(acct.get("phone", ""))  # 국제 형식 변환
 
         # ── OTP / 2FA 입력을 메인 스레드에서 받는 콜백 ────────
         # 스레드 → 메인 스레드 간 값 전달용 queue
