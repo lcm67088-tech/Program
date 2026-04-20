@@ -4300,7 +4300,7 @@ class TemplateTab(tk.Frame):
             )
 
             # ── 모드 표시 배너 ───────────────────────────────
-            _banner_frame = tk.Frame(self._delay_section_wrap,
+            _banner_frame = tk.Frame(self._timing_section_wrap,
                                      bg="#D1FAE5" if _is_tg_api_delay else "#FEF3C7",
                                      highlightbackground="#6EE7B7" if _is_tg_api_delay else "#FCD34D",
                                      highlightthickness=1)
