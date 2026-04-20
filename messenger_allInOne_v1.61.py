@@ -4465,7 +4465,7 @@ class TemplateTab(tk.Frame):
                     ("최근메시지수", self._tg_api_capture_msgs),
                 ]:
                     _field(rC, lbl_t, var)
-                # 캡처 ON/OFF + 웹 캡처 옵션 (v1.62)
+                # 캡처 ON/OFF (v1.62: 채팅캡처 ON = 텍스트+말풍선PNG 동시 저장)
                 self._tg_api_capture_on = tk.BooleanVar(
                     value=self._cur("tg_api_capture_on", True))
                 tk.Checkbutton(rC, text="발송 후 채팅 캡처 ON",
@@ -4475,22 +4475,11 @@ class TemplateTab(tk.Frame):
                                activebackground=PALETTE["card"],
                                font=F_LABEL
                                ).pack(side=tk.LEFT, padx=(10, 0))
-                # v1.62: 웹 캡처(PNG) 체크박스
-                self._tg_api_web_capture = tk.BooleanVar(
-                    value=self._cur("tg_api_web_capture", False))
-                tk.Checkbutton(rC,
-                               text="웹 캡처(PNG)  🌐",
-                               variable=self._tg_api_web_capture,
-                               bg=PALETTE["card"], fg=PALETTE["accent"],
-                               selectcolor=PALETTE["card2"],
-                               activebackground=PALETTE["card"],
-                               font=F_LABEL
-                               ).pack(side=tk.LEFT, padx=(12, 0))
                 tk.Label(rC,
-                         text="(Chrome+selenium 필요)",
+                         text="(텍스트 로그 + 말풍선 PNG 동시 저장)",
                          font=F_SMALL,
                          bg=PALETTE["card"], fg=PALETTE["muted"]
-                         ).pack(side=tk.LEFT, padx=(2, 0))
+                         ).pack(side=tk.LEFT, padx=(6, 0))
 
                 # 행D: 링크 간격
                 rD = _row(card)
@@ -4659,7 +4648,6 @@ class TemplateTab(tk.Frame):
                 self._tg_api_capture_delay = tk.StringVar(value="2.0")
                 self._tg_api_capture_msgs  = tk.StringVar(value="5")
                 self._tg_api_capture_on    = tk.BooleanVar(value=False)
-                self._tg_api_web_capture   = tk.BooleanVar(value=False)  # v1.62
                 self._tg_api_acct_warmup   = tk.StringVar(value="0.5")
 
                 tk.Frame(card, bg=PALETTE["card"], height=4).pack()
@@ -5546,8 +5534,7 @@ class TemplateTab(tk.Frame):
                         data[_key] = _default
             if hasattr(self, "_tg_api_capture_on"):
                 data["tg_api_capture_on"] = bool(self._tg_api_capture_on.get())
-            if hasattr(self, "_tg_api_web_capture"):        # v1.62
-                data["tg_api_web_capture"] = bool(self._tg_api_web_capture.get())
+
             # ▶ Telethon 다계정 모드 저장
             if hasattr(self, "_account_mode_var"):
                 data["account_mode"] = self._account_mode_var.get()
@@ -7305,18 +7292,20 @@ class WorkflowExecutor:
             eng._start_loop_thread(phone, loop)
 
             captured_lines: list[str] = []
+            msgs_raw:  list[dict]  = []   # PNG 렌더링용 구조화 데이터
+            title = peer                   # 기본값 (엔티티 조회 성공 시 덮어씀)
 
             async def _fetch():
+                nonlocal title
                 if not client.is_connected():
                     await client.connect()
                 # 채널/그룹 엔티티 가져오기 (제목 포함)
                 try:
-                    entity = await client.get_entity(peer)
-                    title  = getattr(entity, "title",
-                             getattr(entity, "first_name", peer))
+                    entity   = await client.get_entity(peer)
+                    title    = getattr(entity, "title",
+                               getattr(entity, "first_name", peer))
                     username = getattr(entity, "username", "") or peer
                 except Exception as _ee:
-                    title    = peer
                     username = peer
                     self._log(f"  [캡처] 엔티티 조회 실패: {_ee}", "WARN")
 
@@ -7329,12 +7318,14 @@ class WorkflowExecutor:
                 msgs = await client.get_messages(peer, limit=n_msgs)
                 for m in reversed(msgs):
                     sender_name = ""
+                    sender_id   = None
                     try:
                         if m.sender:
                             sender_name = (
                                 getattr(m.sender, "first_name", "") + " " +
                                 getattr(m.sender, "last_name",  "")
                             ).strip() or getattr(m.sender, "username", "unknown")
+                            sender_id = getattr(m.sender, "id", None)
                     except Exception:
                         sender_name = "unknown"
                     ts_str = m.date.strftime("%H:%M:%S") if m.date else ""
@@ -7344,6 +7335,14 @@ class WorkflowExecutor:
                         media_note = f"[{type(m.media).__name__}]"
                     captured_lines.append(
                         f"[{ts_str}] {sender_name}: {text}{media_note}")
+                    # PNG 렌더링용 raw 데이터
+                    msgs_raw.append({
+                        "sender": sender_name,
+                        "sender_id": sender_id,
+                        "time": ts_str,
+                        "text": text or media_note,
+                        "is_media": bool(m.media and not m.text),
+                    })
 
             eng._run_in_loop(loop, _fetch())
 
@@ -7364,14 +7363,16 @@ class WorkflowExecutor:
             if self._report_rows:
                 self._report_rows[-1]["비고"] += f" [채팅캡처:{fname}]"
 
-            # ── v1.62: 웹 캡처 (Selenium) ────────────────────────────────
-            # tg_api_web_capture ON이고 HAS_SELENIUM이면
-            # web.telegram.org 로 해당 채팅방 실제 화면을 PNG로 추가 저장
-            if self.tmpl.get("tg_api_web_capture", False):
-                web_path = self._tg_web_capture(peer, peer_safe, ts)
-                if web_path:
-                    if self._report_rows:
-                        self._report_rows[-1]["비고"] += f" [웹캡처:{web_path}]"
+            # ── v1.62: 말풍선 PNG 렌더링 ─────────────────────────────────
+            # Telethon으로 가져온 메시지 데이터를 PIL로 말풍선 이미지로 저장
+            # (별도 로그인/Chrome 설정 불필요 — 이미 연결된 세션 활용)
+            png_path = self._render_chat_png(
+                msgs_raw, title, peer_safe, ts,
+                my_phone=phone
+            )
+            if png_path:
+                if self._report_rows:
+                    self._report_rows[-1]["비고"] += f" [이미지캡처:{png_path}]"
 
             return str(fpath)
 
@@ -7379,117 +7380,194 @@ class WorkflowExecutor:
             self._log(f"  ⚠️ 채팅 캡처 실패: {_ce}", "WARN")
             return ""
 
-    # ── v1.62: web.telegram.org 실제 채팅방 PNG 캡처 ────────────────────
-    def _tg_web_capture(self, peer: str, peer_safe: str, ts: str) -> str:
-        """Selenium으로 web.telegram.org 에서 실제 채팅방 화면을 PNG로 저장.
+    # ── v1.62: 말풍선 PNG 렌더러 ────────────────────────────────────────
+    def _render_chat_png(self, msgs: list[dict], room_title: str,
+                         peer_safe: str, ts: str,
+                         my_phone: str = "") -> str:
+        """Telethon으로 가져온 메시지 리스트를 텔레그램 스타일 말풍선 PNG로 저장.
 
-        · peer      : @username 또는 t.me/xxx 형태
-        · peer_safe : 파일명용 정제된 peer
-        · ts        : 타임스탬프 문자열 (chatlog 와 동일 시각)
-        · 반환값    : 저장 파일 경로 (실패 시 '')
+        · msgs       : [{"sender", "sender_id", "time", "text", "is_media"}, ...]
+        · room_title : 채팅방 이름
+        · peer_safe  : 파일명용 정제 문자열
+        · ts         : 타임스탬프 (chatlog 와 동일)
+        · my_phone   : 발송 계정 전화번호 (오른쪽 말풍선 판별용)
+        · 반환값     : 저장 파일명 (실패 시 '')
 
-        전제조건:
-          - Chrome + ChromeDriver 설치
-          - web.telegram.org 에 이미 로그인된 Chrome 프로필 사용
-            (--user-data-dir 로 기존 프로필 로드 → 재로그인 불필요)
-          - selenium 패키지 설치: pip install selenium
+        PIL(Pillow) 이 설치되어 있어야 함.
         """
-        if not HAS_SELENIUM:
-            self._log("⚠️ 웹 캡처 불가: selenium 미설치 (pip install selenium)", "WARN")
-            return ""
         try:
-            import os as _os
+            from PIL import Image as _Img, ImageDraw as _Draw, ImageFont as _Font
+        except ImportError:
+            self._log("⚠️ 말풍선 PNG: Pillow 미설치 (pip install Pillow)", "WARN")
+            return ""
 
-            # ── Chrome 프로필 경로 (settings.json → 기본 Chrome 경로) ──────
-            _app_cfg = load_json(CONFIG_PATH, {}).get("tg_web", {})
-            chrome_profile = (
-                _app_cfg.get("chrome_profile", "")
-                or _os.path.expandvars(
-                    r"%LOCALAPPDATA%\Google\Chrome\User Data"
+        if not msgs:
+            return ""
+
+        try:
+            import datetime as _dt
+
+            # ── 디자인 상수 ───────────────────────────────────────────────
+            W          = 640          # 이미지 너비
+            PAD        = 16           # 외곽 여백
+            BUBBLE_MAX = W - PAD*2 - 60  # 말풍선 최대 너비
+            FONT_SZ    = 14
+            FONT_SM    = 11
+            BG_COLOR   = (20, 30, 48)          # 다크 배경 (텔레그램 다크모드)
+            MY_BUBBLE  = (42, 130, 228)         # 내 메시지 (파란색)
+            OTHER_BUB  = (40, 52, 68)           # 상대 메시지 (회색)
+            MY_TEXT    = (255, 255, 255)
+            OTHER_TEXT = (220, 230, 240)
+            TIME_COLOR = (130, 150, 170)
+            NAME_COLOR = (100, 180, 255)
+            HEADER_BG  = (15, 22, 36)
+            RADIUS     = 14
+
+            # ── 폰트 로드 (없으면 기본 폰트 사용) ───────────────────────
+            def _load_font(size):
+                for path in [
+                    "C:/Windows/Fonts/malgun.ttf",       # 맑은 고딕 (Windows)
+                    "C:/Windows/Fonts/NanumGothic.ttf",
+                    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",  # Linux
+                    "/System/Library/Fonts/AppleSDGothicNeo.ttc",       # macOS
+                ]:
+                    try:
+                        return _Font.truetype(path, size)
+                    except Exception:
+                        continue
+                return _Font.load_default()
+
+            font      = _load_font(FONT_SZ)
+            font_sm   = _load_font(FONT_SM)
+            font_bold = _load_font(FONT_SZ)  # bold 폰트가 없으면 동일 폰트
+
+            # ── 텍스트 줄바꿈 헬퍼 ───────────────────────────────────────
+            def _wrap_text(draw, text, font, max_w):
+                """텍스트를 max_w 픽셀 이내로 줄바꿈. 줄 리스트 반환."""
+                words  = text.split(" ")
+                lines  = []
+                cur    = ""
+                for w in words:
+                    test = (cur + " " + w).strip()
+                    if draw.textlength(test, font=font) <= max_w:
+                        cur = test
+                    else:
+                        if cur:
+                            lines.append(cur)
+                        cur = w
+                if cur:
+                    lines.append(cur)
+                return lines or [""]
+
+            # ── 말풍선 높이 계산 패스 ────────────────────────────────────
+            # 먼저 더미 이미지로 각 말풍선 높이를 계산
+            dummy = _Img.new("RGB", (W, 100))
+            d     = _Draw.Draw(dummy)
+
+            bubble_infos = []   # (is_mine, name, lines, time_str, bh)
+            for msg in msgs:
+                # 내 메시지 여부: sender_id 가 내 계정 user_id 와 일치하면 오른쪽
+                # 여기서는 보내는 계정(phone) 으로 보낸 마지막 메시지를 "내 것"으로 판별
+                # Telethon: out=True 필드가 있으면 가장 정확하지만
+                # msgs_raw 에는 out 정보가 없으므로 sender 이름으로 추정
+                # → 실제로는 발송 계정 이름을 "나"로 취급
+                is_mine = (msg.get("sender_id") is not None and
+                           msg.get("sender", "") not in ("", "unknown"))
+                # 더 단순하게: 마지막 메시지(가장 최근 = 내가 보낸 것)를 파란색으로
+                # → sender 이름이 비어있지 않으면 파란색 (발송 계정)
+                # 실제 구현: msgs_raw 에 out=True 를 추가하는 게 가장 정확하나
+                # 현재 구조에서는 index 기반으로 처리 (마지막 = 내 메시지)
+                name    = msg.get("sender", "")
+                text    = msg.get("text", "")
+                ts_str  = msg.get("time", "")
+                bub_w   = BUBBLE_MAX
+                lines   = _wrap_text(d, text, font, bub_w - 24)
+                line_h  = FONT_SZ + 4
+                bh      = PAD + len(lines) * line_h + 6 + FONT_SM + PAD
+                if not is_mine:
+                    bh += FONT_SM + 4   # 이름 줄 추가 높이
+                bubble_infos.append((is_mine, name, lines, ts_str, bh))
+
+            # ── 전체 이미지 높이 계산 ─────────────────────────────────────
+            HEADER_H = 52
+            total_h  = HEADER_H + PAD
+            for _, _, _, _, bh in bubble_infos:
+                total_h += bh + 8
+            total_h += PAD
+
+            # ── 실제 이미지 그리기 ───────────────────────────────────────
+            img  = _Img.new("RGB", (W, total_h), BG_COLOR)
+            draw = _Draw.Draw(img)
+
+            # 헤더 (채팅방 이름 + 시각)
+            draw.rectangle([0, 0, W, HEADER_H], fill=HEADER_BG)
+            draw.text((PAD, 10), room_title, font=font_bold, fill=(255, 255, 255))
+            cap_time = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+            draw.text((PAD, 10 + FONT_SZ + 4), cap_time, font=font_sm,
+                      fill=TIME_COLOR)
+            # 헤더 구분선
+            draw.line([0, HEADER_H - 1, W, HEADER_H - 1], fill=(30, 44, 64), width=1)
+
+            y = HEADER_H + PAD
+
+            # 재계산: out 판별을 인덱스 기준(마지막 = 내 것)으로 처리
+            last_idx = len(msgs) - 1
+            for idx, (msg, (_, name, lines, ts_str, bh)) in \
+                    enumerate(zip(msgs, bubble_infos)):
+                is_mine = (idx == last_idx)  # 마지막 메시지 = 내가 보낸 것
+
+                bub_color  = MY_BUBBLE  if is_mine else OTHER_BUB
+                text_color = MY_TEXT    if is_mine else OTHER_TEXT
+                bub_w = max(
+                    120,
+                    max((draw.textlength(ln, font=font) for ln in lines), default=60)
+                    + 24
                 )
-            )
-            chrome_profile_dir = _app_cfg.get("chrome_profile_dir", "Default")
+                bub_w = min(bub_w, BUBBLE_MAX)
 
-            # ── peer → web.telegram.org URL 변환 ─────────────────────────
-            # @username  → https://web.telegram.org/k/#@username
-            # t.me/xxx   → https://web.telegram.org/k/#@xxx
-            # t.me/+hash → 초대링크 (그대로 사용)
-            raw = peer.strip()
-            if raw.startswith("https://t.me/+") or raw.startswith("t.me/+"):
-                # 비공개 초대링크 — username 없으므로 웹캡처 불가
-                self._log("⚠️ 웹 캡처: 비공개 초대링크는 웹 캡처 불가", "WARN")
-                return ""
-            elif raw.startswith("https://t.me/"):
-                uname = raw.replace("https://t.me/", "").split("/")[0]
-            elif raw.startswith("t.me/"):
-                uname = raw.replace("t.me/", "").split("/")[0]
-            elif raw.startswith("@"):
-                uname = raw[1:]
-            else:
-                uname = raw
-            web_url = f"https://web.telegram.org/k/#@{uname}"
+                # 말풍선 x 위치
+                if is_mine:
+                    bx = W - PAD - bub_w
+                else:
+                    bx = PAD
 
-            # ── Chrome 옵션 ───────────────────────────────────────────────
-            opts = _ChromeOptions()
-            opts.add_argument("--headless=new")          # 백그라운드 실행
-            opts.add_argument("--no-sandbox")
-            opts.add_argument("--disable-dev-shm-usage")
-            opts.add_argument("--window-size=1280,900")
-            opts.add_argument("--disable-gpu")
-            opts.add_argument("--disable-extensions")
-            opts.add_argument("--disable-notifications")
-            opts.add_argument(f"--user-data-dir={chrome_profile}")
-            opts.add_argument(f"--profile-directory={chrome_profile_dir}")
-            # 로그 억제
-            opts.add_experimental_option("excludeSwitches", ["enable-logging"])
-            opts.add_argument("--log-level=3")
+                # 발신자 이름 (상대방만)
+                inner_y = y
+                if not is_mine and name:
+                    draw.text((bx + 10, inner_y + 6), name,
+                              font=font_sm, fill=NAME_COLOR)
+                    inner_y += FONT_SM + 4
 
-            self._log(f"🌐 웹 캡처 시작: {web_url}", "INFO")
+                # 말풍선 배경 (둥근 사각형 근사)
+                bub_rect = [bx, inner_y, bx + bub_w, inner_y + bh - (0 if is_mine else FONT_SM + 4)]
+                draw.rounded_rectangle(bub_rect, radius=RADIUS, fill=bub_color)
 
-            driver = _selenium_webdriver.Chrome(options=opts)
-            try:
-                driver.get(web_url)
+                # 메시지 텍스트
+                tx = bx + 10
+                ty = inner_y + 10
+                line_h = FONT_SZ + 4
+                for ln in lines:
+                    draw.text((tx, ty), ln, font=font, fill=text_color)
+                    ty += line_h
 
-                # ── 채팅방 메시지 영역 로딩 대기 (최대 15초) ─────────────
-                # web.telegram.org/k 는 SPA — 메시지 버블이 렌더링될 때까지 대기
-                try:
-                    _selenium_Wait(driver, 15).until(
-                        _selenium_EC.presence_of_element_located(
-                            (_selenium_By.CSS_SELECTOR,
-                             ".bubbles-inner, .message, .bubble")
-                        )
-                    )
-                    # 추가 렌더링 여유 (이미지/이모지 로딩)
-                    time.sleep(2)
-                except Exception:
-                    # 타임아웃 시에도 현재 화면 캡처 시도
-                    self._log("⚠️ 웹 캡처: 메시지 로딩 타임아웃 — 현재 화면 저장", "WARN")
-                    time.sleep(3)
+                # 시각 (오른쪽 하단)
+                time_w = draw.textlength(ts_str, font=font_sm)
+                draw.text((bx + bub_w - time_w - 8, ty),
+                          ts_str, font=font_sm, fill=TIME_COLOR)
 
-                # ── 스크롤을 맨 아래로 (최신 메시지 보이게) ─────────────
-                try:
-                    driver.execute_script(
-                        "var el = document.querySelector('.bubbles-inner, .scrollable');"
-                        "if(el) el.scrollTop = el.scrollHeight;"
-                    )
-                    time.sleep(0.5)
-                except Exception:
-                    pass
+                y += bh + 8
 
-                # ── PNG 저장 ──────────────────────────────────────────────
-                job_name = self.job.get("name", "job").replace(" ", "_")
-                fname_png = f"webcap_{job_name}_{peer_safe}_{ts}.png"
-                SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-                fpath_png = SCREENSHOTS_DIR / fname_png
-                driver.save_screenshot(str(fpath_png))
-                self._log(f"📸 웹 캡처 저장: {fname_png}", "INFO")
-                return fname_png
+            # ── 저장 ──────────────────────────────────────────────────────
+            job_name  = self.job.get("name", "job").replace(" ", "_")
+            fname_png = f"chatimg_{job_name}_{peer_safe}_{ts}.png"
+            SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+            fpath_png = SCREENSHOTS_DIR / fname_png
+            img.save(str(fpath_png), "PNG")
+            self._log(f"📸 채팅 이미지 저장: {fname_png}", "INFO")
+            return fname_png
 
-            finally:
-                driver.quit()
-
-        except Exception as _we:
-            self._log(f"  ⚠️ 웹 캡처 실패: {_we}", "WARN")
+        except Exception as _re:
+            self._log(f"  ⚠️ 말풍선 PNG 생성 실패: {_re}", "WARN")
             return ""
 
     def _capture_screen(self, reason: str = "periodic") -> str:
@@ -9975,15 +10053,7 @@ except ImportError:
     HAS_TELETHON = False
     _tl_errors = None
 
-try:
-    from selenium import webdriver as _selenium_webdriver
-    from selenium.webdriver.common.by import By as _selenium_By
-    from selenium.webdriver.support.ui import WebDriverWait as _selenium_Wait
-    from selenium.webdriver.support import expected_conditions as _selenium_EC
-    from selenium.webdriver.chrome.options import Options as _ChromeOptions
-    HAS_SELENIUM = True
-except ImportError:
-    HAS_SELENIUM = False
+
 
 # 텔레그램 계정 설정 저장 경로
 TG_ACCOUNTS_PATH = CONFIG_DIR / "tg_accounts.json"
@@ -12022,47 +12092,6 @@ class SettingsTab(tk.Frame):
                       ).pack(side=tk.LEFT, padx=(8, 0))
         row(c4, "저장 위치", _ss_dir_w)
 
-        # ── v1.62: 웹 캡처(Selenium) Chrome 프로필 설정 ──────────────────
-        c5 = card("🌐 웹 캡처 설정 (Selenium)")
-        self._tg_chrome_profile_var = tk.StringVar()
-        self._tg_chrome_profile_dir_var = tk.StringVar(value="Default")
-
-        def _chrome_profile_w(p):
-            tk.Entry(p, textvariable=self._tg_chrome_profile_var,
-                     width=40, relief=tk.FLAT,
-                     bg=PALETTE["card2"], fg=PALETTE["text"],
-                     insertbackground=PALETTE["text"],
-                     font=F_SMALL
-                     ).pack(side=tk.LEFT, padx=(0, 6))
-            tk.Label(p,
-                     text="(비워두면 Chrome 기본 경로 사용)",
-                     font=F_SMALL,
-                     bg=PALETTE["card"], fg=PALETTE["muted"]
-                     ).pack(side=tk.LEFT)
-        row(c5, "Chrome 프로필 경로", _chrome_profile_w)
-
-        def _chrome_dir_w(p):
-            tk.Entry(p, textvariable=self._tg_chrome_profile_dir_var,
-                     width=20, relief=tk.FLAT,
-                     bg=PALETTE["card2"], fg=PALETTE["text"],
-                     insertbackground=PALETTE["text"],
-                     font=F_SMALL
-                     ).pack(side=tk.LEFT, padx=(0, 6))
-            tk.Label(p,
-                     text="(예: Default, Profile 1, Profile 2 ...)",
-                     font=F_SMALL,
-                     bg=PALETTE["card"], fg=PALETTE["muted"]
-                     ).pack(side=tk.LEFT)
-        row(c5, "Chrome 프로필 디렉터리", _chrome_dir_w)
-
-        tk.Label(c5,
-                 text="⚠️  web.telegram.org 에 이미 로그인된 Chrome 프로필을 사용해야 합니다.\n"
-                      "    pip install selenium  및  ChromeDriver 설치 필요",
-                 font=F_SMALL,
-                 bg=PALETTE["card"], fg=PALETTE["muted"],
-                 justify=tk.LEFT
-                 ).pack(anchor=tk.W, padx=16, pady=(4, 8))
-
         # ── 저장 버튼 영역 ───────────────────────────────
         save_wrap = tk.Frame(inner, bg=PALETTE["card"],
                              highlightbackground=PALETTE["border"],
@@ -12118,10 +12147,7 @@ class SettingsTab(tk.Frame):
         self._ss_enabled_var.set(ss.get("enabled",  True))
         self._ss_interval_var.set(str(ss.get("interval_min", 60)))
         self._ss_on_error_var.set(ss.get("on_error", True))
-        # v1.62: 웹 캡처 Chrome 프로필 로드
-        _tgw = cfg.get("tg_web", {})
-        self._tg_chrome_profile_var.set(_tgw.get("chrome_profile", ""))
-        self._tg_chrome_profile_dir_var.set(_tgw.get("chrome_profile_dir", "Default"))
+
 
     def _save(self):
         cfg = self.app.config_data
@@ -12147,10 +12173,7 @@ class SettingsTab(tk.Frame):
         cfg["screenshot"]["interval_min"] = safe_float(
             self._ss_interval_var.get(), 60.0)
         cfg["screenshot"]["on_error"]     = self._ss_on_error_var.get()
-        # v1.62: 웹 캡처 Chrome 프로필 저장
-        cfg.setdefault("tg_web", {})
-        cfg["tg_web"]["chrome_profile"]     = self._tg_chrome_profile_var.get().strip()
-        cfg["tg_web"]["chrome_profile_dir"] = self._tg_chrome_profile_dir_var.get().strip() or "Default"
+
 
         # pyautogui failsafe 적용
         if HAS_PYAUTOGUI:
