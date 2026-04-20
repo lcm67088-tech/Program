@@ -2159,6 +2159,17 @@ class App(tk.Tk):
                 "api_id":   "",
                 "api_hash": "",
             },
+            # Telethon API 모드 기본 딜레이 (템플릿에서 개별 오버라이드 가능)
+            "tg_api_defaults": {
+                "connect_delay": 2.0,   # 계정 연결 간격(s)
+                "retry_delay":   5.0,   # 재시도 대기(s)
+                "before_send":   0.5,   # 발송 전 대기(s)
+                "after_send":    1.0,   # 발송 후 대기(s)
+                "capture_delay": 2.0,   # 채팅 캡처 전 대기(s)
+                "capture_msgs":  5,     # 캡처할 최근 메시지 수
+                "capture_on":    True,  # 발송 후 채팅 캡처 ON
+                "acct_warmup":   0.5,   # 계정 전환 시 추가 대기(s)
+            },
         }
 
     # ─────────────────────────────────────────────────────────
@@ -4280,81 +4291,258 @@ class TemplateTab(tk.Frame):
             tk.Frame(card, bg=PALETTE["card"], height=4).pack()
 
         # ════════════════════════════════════════════════
-        # 텔레그램 : 원본 v2 딜레이 8개
+        # 텔레그램: API 모드 / 일반(pyautogui) 모드 분리
         # ════════════════════════════════════════════════
         elif wk in ("telegram_join", "telegram_message"):
-            card = _make_card()
-            # 행1: 로딩/전환
-            r1 = _row(card)
-            tk.Label(r1, text="로딩 대기", width=14, anchor=tk.W,
-                     font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
-                     ).pack(side=tk.LEFT)
-            self._tg_chrome_load   = tk.StringVar(value=str(self._cur("tg_chrome_load",    2.0)))
-            self._tg_tg_open       = tk.StringVar(value=str(self._cur("tg_telegram_open",  1.5)))
-            self._tg_join_click    = tk.StringVar(value=str(self._cur("tg_join_click",     2.0)))
-            for lbl_t, var in [
-                ("Chrome(s)",   self._tg_chrome_load),
-                ("앱전환(s)",   self._tg_tg_open),
-                ("가입클릭(s)", self._tg_join_click),
-            ]:
-                _field(r1, lbl_t, var)
-            # 행2: 메시지 관련
-            r2 = _row(card)
-            tk.Label(r2, text="메시지 딜레이", width=14, anchor=tk.W,
-                     font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
-                     ).pack(side=tk.LEFT)
-            self._tg_after_type  = tk.StringVar(value=str(self._cur("tg_after_type",  0.5)))
-            self._tg_after_send  = tk.StringVar(value=str(self._cur("tg_after_send",  1.0)))
-            self._tg_after_back  = tk.StringVar(value=str(self._cur("tg_after_back",  0.8)))
-            for lbl_t, var in [
-                ("타이핑 후(s)", self._tg_after_type),
-                ("전송 후(s)",   self._tg_after_send),
-                ("뒤로가기(s)",  self._tg_after_back),
-            ]:
-                _field(r2, lbl_t, var)
-            # 행3: 링크 간격
-            r3 = _row(card)
-            tk.Label(r3, text="링크 간격", width=14, anchor=tk.W,
-                     font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
-                     ).pack(side=tk.LEFT)
-            self._tg_between_min = tk.StringVar(value=str(self._cur("tg_between_min", 3.0)))
-            self._tg_between_max = tk.StringVar(value=str(self._cur("tg_between_max", 7.0)))
-            for lbl_t, var in [
-                ("최소(s)", self._tg_between_min),
-                ("최대(s)", self._tg_between_max),
-            ]:
-                _field(r3, lbl_t, var)
+            _is_tg_api_delay = (
+                HAS_TELETHON
+                and bool(load_json(TG_ACCOUNTS_PATH, []))
+            )
 
-            # 행4: Telethon 다계정 모드 (Telethon 설치 시만 의미 있음)
-            r4 = _row(card)
-            tk.Label(r4, text="계정 분배 모드", width=14, anchor=tk.W,
-                     font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
-                     ).pack(side=tk.LEFT)
-            self._account_mode_var = tk.StringVar(
-                value=self._cur("account_mode", "zigzag"))
-            for mode_val, mode_lbl in [
-                ("zigzag", "순환"),
-                ("split",  "균등분배"),
-                ("all",    "전체"),
-            ]:
-                tk.Radiobutton(
-                    r4, text=mode_lbl,
-                    variable=self._account_mode_var, value=mode_val,
-                    font=F_LABEL, bg=PALETTE["card"],
-                    fg=PALETTE["text"],
-                    selectcolor=PALETTE["card2"],
-                    activebackground=PALETTE["card"]
-                ).pack(side=tk.LEFT, padx=(0, 8))
+            # ── 모드 표시 배너 ───────────────────────────────
+            _banner_frame = tk.Frame(self._delay_section_wrap,
+                                     bg="#D1FAE5" if _is_tg_api_delay else "#FEF3C7",
+                                     highlightbackground="#6EE7B7" if _is_tg_api_delay else "#FCD34D",
+                                     highlightthickness=1)
+            _banner_frame.pack(fill=tk.X, pady=(0, 8))
+            tk.Label(_banner_frame,
+                     text=("📡  Telethon API 모드 — 딜레이 설정"
+                           if _is_tg_api_delay else
+                           "🖱️  일반(pyautogui) 모드 — 딜레이 설정"),
+                     font=(_FF, 9, "bold"),
+                     bg="#D1FAE5" if _is_tg_api_delay else "#FEF3C7",
+                     fg="#065F46" if _is_tg_api_delay else "#92400E",
+                     padx=10, pady=5
+                     ).pack(anchor="w")
 
-            r5 = _row(card)
-            tk.Label(r5, text="계정 전환 딜레이", width=14, anchor=tk.W,
-                     font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
-                     ).pack(side=tk.LEFT)
-            self._account_sw_delay = tk.StringVar(
-                value=str(self._cur("account_switch_delay", 1.0)))
-            _field(r5, "전환(s)", self._account_sw_delay)
+            if _is_tg_api_delay:
+                # ════ Telethon API 모드 딜레이 ════════════════
+                card = _make_card()
 
-            tk.Frame(card, bg=PALETTE["card"], height=4).pack()
+                # 섹션 헤더
+                _sh = tk.Frame(card, bg=PALETTE["card"])
+                _sh.pack(fill=tk.X, padx=12, pady=(8, 2))
+                tk.Label(_sh, text="[API 단계별 딜레이]",
+                         font=(_FF, 9, "bold"), bg=PALETTE["card"],
+                         fg=PALETTE["primary"]).pack(anchor="w")
+
+                # 행A: 연결 / 재연결
+                rA = _row(card)
+                tk.Label(rA, text="연결 단계", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._tg_api_connect_delay = tk.StringVar(
+                    value=str(self._cur("tg_api_connect_delay", 2.0)))
+                self._tg_api_retry_delay   = tk.StringVar(
+                    value=str(self._cur("tg_api_retry_delay",   5.0)))
+                for lbl_t, var in [
+                    ("계정연결(s)",   self._tg_api_connect_delay),
+                    ("재시도대기(s)", self._tg_api_retry_delay),
+                ]:
+                    _field(rA, lbl_t, var)
+
+                # 행B: 발송 전후
+                rB = _row(card)
+                tk.Label(rB, text="발송 전후", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._tg_api_before_send = tk.StringVar(
+                    value=str(self._cur("tg_api_before_send", 0.5)))
+                self._tg_api_after_send  = tk.StringVar(
+                    value=str(self._cur("tg_api_after_send",  1.0)))
+                for lbl_t, var in [
+                    ("발송 전(s)", self._tg_api_before_send),
+                    ("발송 후(s)", self._tg_api_after_send),
+                ]:
+                    _field(rB, lbl_t, var)
+
+                # 행C: 캡처
+                rC = _row(card)
+                tk.Label(rC, text="발송 후 캡처", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._tg_api_capture_delay = tk.StringVar(
+                    value=str(self._cur("tg_api_capture_delay", 2.0)))
+                self._tg_api_capture_msgs  = tk.StringVar(
+                    value=str(self._cur("tg_api_capture_msgs",  5)))
+                for lbl_t, var in [
+                    ("캡처대기(s)",  self._tg_api_capture_delay),
+                    ("최근메시지수", self._tg_api_capture_msgs),
+                ]:
+                    _field(rC, lbl_t, var)
+                # 캡처 ON/OFF
+                self._tg_api_capture_on = tk.BooleanVar(
+                    value=self._cur("tg_api_capture_on", True))
+                tk.Checkbutton(rC, text="발송 후 채팅 캡처 ON",
+                               variable=self._tg_api_capture_on,
+                               bg=PALETTE["card"], fg=PALETTE["text"],
+                               selectcolor=PALETTE["card2"],
+                               activebackground=PALETTE["card"],
+                               font=F_LABEL
+                               ).pack(side=tk.LEFT, padx=(10, 0))
+
+                # 행D: 링크 간격
+                rD = _row(card)
+                tk.Label(rD, text="링크 간격", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._tg_between_min = tk.StringVar(
+                    value=str(self._cur("tg_between_min", 3.0)))
+                self._tg_between_max = tk.StringVar(
+                    value=str(self._cur("tg_between_max", 7.0)))
+                for lbl_t, var in [
+                    ("최소(s)", self._tg_between_min),
+                    ("최대(s)", self._tg_between_max),
+                ]:
+                    _field(rD, lbl_t, var)
+
+                # 행E: 계정 분배
+                rE = _row(card)
+                tk.Label(rE, text="계정 분배 모드", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._account_mode_var = tk.StringVar(
+                    value=self._cur("account_mode", "zigzag"))
+                for mode_val, mode_lbl in [
+                    ("zigzag", "🔄 순환"),
+                    ("split",  "⚖️ 균등분배"),
+                    ("all",    "📢 전체"),
+                ]:
+                    tk.Radiobutton(
+                        rE, text=mode_lbl,
+                        variable=self._account_mode_var, value=mode_val,
+                        font=F_LABEL, bg=PALETTE["card"],
+                        fg=PALETTE["text"],
+                        selectcolor=PALETTE["card2"],
+                        activebackground=PALETTE["card"]
+                    ).pack(side=tk.LEFT, padx=(0, 8))
+
+                # 행F: 계정 전환
+                rF = _row(card)
+                tk.Label(rF, text="계정 전환", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._account_sw_delay = tk.StringVar(
+                    value=str(self._cur("account_switch_delay", 1.0)))
+                self._tg_api_acct_warmup = tk.StringVar(
+                    value=str(self._cur("tg_api_acct_warmup", 0.5)))
+                for lbl_t, var in [
+                    ("전환대기(s)",   self._account_sw_delay),
+                    ("워밍업추가(s)", self._tg_api_acct_warmup),
+                ]:
+                    _field(rF, lbl_t, var)
+
+                # 더미 변수: 저장 시 hasattr 체크용 (pyautogui 전용 키 채우기)
+                self._tg_chrome_load = tk.StringVar(value="2.0")
+                self._tg_tg_open     = tk.StringVar(value="1.5")
+                self._tg_join_click  = tk.StringVar(value="2.0")
+                self._tg_after_type  = tk.StringVar(value="0.5")
+                self._tg_after_send  = tk.StringVar(value="1.0")
+                self._tg_after_back  = tk.StringVar(value="0.8")
+
+                tk.Frame(card, bg=PALETTE["card"], height=4).pack()
+
+            else:
+                # ════ pyautogui(일반) 모드 딜레이 ═════════════
+                card = _make_card()
+
+                _sh = tk.Frame(card, bg=PALETTE["card"])
+                _sh.pack(fill=tk.X, padx=12, pady=(8, 2))
+                tk.Label(_sh, text="[크롬 자동화 단계별 딜레이]",
+                         font=(_FF, 9, "bold"), bg=PALETTE["card"],
+                         fg=PALETTE["accent"]).pack(anchor="w")
+
+                # 행1: 로딩/전환
+                r1 = _row(card)
+                tk.Label(r1, text="로딩 대기", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._tg_chrome_load = tk.StringVar(
+                    value=str(self._cur("tg_chrome_load",   2.0)))
+                self._tg_tg_open     = tk.StringVar(
+                    value=str(self._cur("tg_telegram_open", 1.5)))
+                self._tg_join_click  = tk.StringVar(
+                    value=str(self._cur("tg_join_click",    2.0)))
+                for lbl_t, var in [
+                    ("Chrome(s)",   self._tg_chrome_load),
+                    ("앱전환(s)",   self._tg_tg_open),
+                    ("가입클릭(s)", self._tg_join_click),
+                ]:
+                    _field(r1, lbl_t, var)
+
+                # 행2: 메시지 관련
+                r2 = _row(card)
+                tk.Label(r2, text="메시지 딜레이", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._tg_after_type = tk.StringVar(
+                    value=str(self._cur("tg_after_type", 0.5)))
+                self._tg_after_send = tk.StringVar(
+                    value=str(self._cur("tg_after_send", 1.0)))
+                self._tg_after_back = tk.StringVar(
+                    value=str(self._cur("tg_after_back", 0.8)))
+                for lbl_t, var in [
+                    ("타이핑 후(s)", self._tg_after_type),
+                    ("전송 후(s)",   self._tg_after_send),
+                    ("뒤로가기(s)",  self._tg_after_back),
+                ]:
+                    _field(r2, lbl_t, var)
+
+                # 행3: 링크 간격
+                r3 = _row(card)
+                tk.Label(r3, text="링크 간격", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._tg_between_min = tk.StringVar(
+                    value=str(self._cur("tg_between_min", 3.0)))
+                self._tg_between_max = tk.StringVar(
+                    value=str(self._cur("tg_between_max", 7.0)))
+                for lbl_t, var in [
+                    ("최소(s)", self._tg_between_min),
+                    ("최대(s)", self._tg_between_max),
+                ]:
+                    _field(r3, lbl_t, var)
+
+                # 행4: 계정 분배 (pyautogui 모드에서도 표시, 추후 API 전환 대비)
+                r4 = _row(card)
+                tk.Label(r4, text="계정 분배 모드", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._account_mode_var = tk.StringVar(
+                    value=self._cur("account_mode", "zigzag"))
+                for mode_val, mode_lbl in [
+                    ("zigzag", "🔄 순환"),
+                    ("split",  "⚖️ 균등분배"),
+                    ("all",    "📢 전체"),
+                ]:
+                    tk.Radiobutton(
+                        r4, text=mode_lbl,
+                        variable=self._account_mode_var, value=mode_val,
+                        font=F_LABEL, bg=PALETTE["card"],
+                        fg=PALETTE["text"],
+                        selectcolor=PALETTE["card2"],
+                        activebackground=PALETTE["card"]
+                    ).pack(side=tk.LEFT, padx=(0, 8))
+
+                r5 = _row(card)
+                tk.Label(r5, text="계정 전환 딜레이", width=14, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._account_sw_delay = tk.StringVar(
+                    value=str(self._cur("account_switch_delay", 1.0)))
+                _field(r5, "전환(s)", self._account_sw_delay)
+
+                # 더미 변수: API 전용 키 (저장 시 기본값 유지)
+                self._tg_api_connect_delay = tk.StringVar(value="2.0")
+                self._tg_api_retry_delay   = tk.StringVar(value="5.0")
+                self._tg_api_before_send   = tk.StringVar(value="0.5")
+                self._tg_api_after_send    = tk.StringVar(value="1.0")
+                self._tg_api_capture_delay = tk.StringVar(value="2.0")
+                self._tg_api_capture_msgs  = tk.StringVar(value="5")
+                self._tg_api_capture_on    = tk.BooleanVar(value=False)
+                self._tg_api_acct_warmup   = tk.StringVar(value="0.5")
+
+                tk.Frame(card, bg=PALETTE["card"], height=4).pack()
 
     # ── 그리드 좌표 자동 계산 섹션 ──────────────────────────
     def _render_grid_section(self):
@@ -5214,6 +5402,24 @@ class TemplateTab(tk.Frame):
             for _attr, _key, _default in _tg_delay_map:
                 if hasattr(self, _attr):
                     data[_key] = safe_float(getattr(self, _attr).get(), _default)
+            # ▶ Telethon API 전용 딜레이 저장
+            _tg_api_delay_map = [
+                ("_tg_api_connect_delay", "tg_api_connect_delay", 2.0),
+                ("_tg_api_retry_delay",   "tg_api_retry_delay",   5.0),
+                ("_tg_api_before_send",   "tg_api_before_send",   0.5),
+                ("_tg_api_after_send",    "tg_api_after_send",    1.0),
+                ("_tg_api_capture_delay", "tg_api_capture_delay", 2.0),
+                ("_tg_api_capture_msgs",  "tg_api_capture_msgs",  5),
+                ("_tg_api_acct_warmup",   "tg_api_acct_warmup",   0.5),
+            ]
+            for _attr, _key, _default in _tg_api_delay_map:
+                if hasattr(self, _attr):
+                    try:
+                        data[_key] = safe_float(getattr(self, _attr).get(), _default)
+                    except Exception:
+                        data[_key] = _default
+            if hasattr(self, "_tg_api_capture_on"):
+                data["tg_api_capture_on"] = bool(self._tg_api_capture_on.get())
             # ▶ Telethon 다계정 모드 저장
             if hasattr(self, "_account_mode_var"):
                 data["account_mode"] = self._account_mode_var.get()
@@ -6870,6 +7076,97 @@ class WorkflowExecutor:
         return rows
 
     # ── 스크린샷 캡처 ────────────────────────────────────────
+    def _tg_capture_chat(self, eng, acct: dict, peer: str,
+                          capture_delay: float = 2.0,
+                          n_msgs: int = 5) -> str:
+        """Telethon API로 채팅방 최신 메시지를 가져와 텍스트 파일로 저장.
+
+        · peer       : 채널/그룹 username 또는 링크
+        · capture_delay : 발송 후 대기 시간(초) — 메시지 반영 대기
+        · n_msgs     : 가져올 최근 메시지 수
+        · 저장 위치  : screenshots/chatlog_{작업명}_{peer}_{시각}.txt
+        · 반환값     : 저장 파일 경로 (실패 시 '')
+        """
+        if not HAS_TELETHON:
+            return ""
+        # 캡처 ON 설정 확인
+        if not self.tmpl.get("tg_api_capture_on", True):
+            return ""
+        try:
+            import datetime as _dt
+            import asyncio as _aio
+
+            time.sleep(capture_delay)  # 메시지 서버 반영 대기
+
+            phone = eng._normalize_phone(acct.get("phone", ""))
+            client, loop = eng._ensure_client(acct)
+            eng._start_loop_thread(phone, loop)
+
+            captured_lines: list[str] = []
+
+            async def _fetch():
+                if not client.is_connected():
+                    await client.connect()
+                # 채널/그룹 엔티티 가져오기 (제목 포함)
+                try:
+                    entity = await client.get_entity(peer)
+                    title  = getattr(entity, "title",
+                             getattr(entity, "first_name", peer))
+                    username = getattr(entity, "username", "") or peer
+                except Exception as _ee:
+                    title    = peer
+                    username = peer
+                    self._log(f"  [캡처] 엔티티 조회 실패: {_ee}", "WARN")
+
+                captured_lines.append(f"=== 방 제목: {title} (@{username}) ===")
+                captured_lines.append(
+                    f"=== 캡처 시각: {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+                captured_lines.append("")
+
+                # 최근 메시지 가져오기
+                msgs = await client.get_messages(peer, limit=n_msgs)
+                for m in reversed(msgs):
+                    sender_name = ""
+                    try:
+                        if m.sender:
+                            sender_name = (
+                                getattr(m.sender, "first_name", "") + " " +
+                                getattr(m.sender, "last_name",  "")
+                            ).strip() or getattr(m.sender, "username", "unknown")
+                    except Exception:
+                        sender_name = "unknown"
+                    ts_str = m.date.strftime("%H:%M:%S") if m.date else ""
+                    text   = (m.text or "").replace("\n", " ")
+                    media_note = ""
+                    if m.media and not m.text:
+                        media_note = f"[{type(m.media).__name__}]"
+                    captured_lines.append(
+                        f"[{ts_str}] {sender_name}: {text}{media_note}")
+
+            eng._run_in_loop(loop, _fetch())
+
+            if not captured_lines:
+                return ""
+
+            # 파일 저장
+            job_name  = self.job.get("name", "job").replace(" ", "_")
+            peer_safe = peer.lstrip("@").replace("/", "_")[:20]
+            ts        = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            fname     = f"chatlog_{job_name}_{peer_safe}_{ts}.txt"
+            SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+            fpath     = SCREENSHOTS_DIR / fname
+            fpath.write_text("\n".join(captured_lines), encoding="utf-8")
+
+            self._log(f"📋 채팅 캡처 저장: {fname}", "INFO")
+            # 리포트에 파일명 기록
+            if self._report_rows:
+                self._report_rows[-1]["비고"] += f" [채팅캡처:{fname}]"
+            return str(fpath)
+
+        except Exception as _ce:
+            self._log(f"  ⚠️ 채팅 캡처 실패: {_ce}", "WARN")
+            return ""
+
     def _capture_screen(self, reason: str = "periodic") -> str:
         """현재 화면을 캡처해 screenshots/ 에 저장. 저장 경로 반환(실패 시 '').
 
@@ -7969,7 +8266,7 @@ class WorkflowExecutor:
         self._log(f"완료 — 성공:{self._succ} / 실패:{self._fail}", "SUCCESS")
 
     def _run_telegram_message_telethon(self, accounts: list):
-        """Telethon 엔진으로 메시지 발송 — Zigzag 모드 (기본)  [v1.61 TG-5]"""
+        """Telethon 엔진으로 메시지 발송 — 단계별 딜레이 + 채팅 캡처  [v1.61 TG-5]"""
         rows    = self._read_targets()
         total   = len(rows)
         message = self.tmpl.get("message") or self.job.get("message", "")
@@ -7978,11 +8275,10 @@ class WorkflowExecutor:
         if not message:
             self._log("메시지가 비어 있습니다.", "ERROR"); return
 
-        # ── 이미지 첨부 설정 읽기 (Telethon API 모드: 좌표 불필요) ──────
+        # ── 이미지 첨부 설정 ──────────────────────────────────
         use_img  = self.tmpl.get("use_image", False)
         img_mode = self.tmpl.get("image_mode", "none")
         img_path = self.tmpl.get("image_path", "").strip() if use_img else ""
-        # Telethon 모드에서는 "file" 방식만 지원 (clipboard는 pyautogui 전용)
         if use_img and img_mode == "file" and img_path:
             import os as _os
             if not _os.path.isfile(img_path):
@@ -7991,17 +8287,34 @@ class WorkflowExecutor:
             else:
                 self._log(f"📎 이미지 첨부 모드: {img_path}", "INFO")
         elif use_img and img_mode == "clipboard":
-            self._log("⚠️ Telethon 모드에서 클립보드 첨부는 지원되지 않습니다. "
+            self._log("⚠️ Telethon 모드에서 클립보드 첨부는 지원 안됨. "
                       "파일 경로 방식을 사용하세요.", "WARN")
             img_path = ""
         else:
             img_path = ""
 
+        # ── API 단계별 딜레이 읽기 ────────────────────────────
+        api_connect_dly = safe_float(self.tmpl.get("tg_api_connect_delay", 2.0))
+        api_before_send = safe_float(self.tmpl.get("tg_api_before_send",   0.5))
+        api_after_send  = safe_float(self.tmpl.get("tg_api_after_send",    1.0))
+        api_capture_dly = safe_float(self.tmpl.get("tg_api_capture_delay", 2.0))
+        api_capture_n   = int(safe_float(self.tmpl.get("tg_api_capture_msgs", 5), 5))
+        api_capture_on  = bool(self.tmpl.get("tg_api_capture_on", True))
+        api_warmup_add  = safe_float(self.tmpl.get("tg_api_acct_warmup",   0.5))
+        tg_min  = safe_float(self.tmpl.get("tg_between_min", 3.0))
+        tg_max  = safe_float(self.tmpl.get("tg_between_max", 7.0))
+        sw_dly  = safe_float(self.tmpl.get("account_switch_delay", 1.0))
+
         mode = self.tmpl.get("account_mode", "zigzag")
         self._log(
             f"[Telethon] 메시지 발송 시작 — 총 {total}명 / "
             f"계정 {len(accounts)}개 / 모드: {mode}"
-            + (f" / 이미지: {img_path}" if img_path else ""), "INFO")
+            + (f" / 이미지: {img_path}" if img_path else "")
+            + (f" / 채팅캡처: {'ON' if api_capture_on else 'OFF'}"), "INFO")
+        self._log(
+            f"  딜레이 — 연결:{api_connect_dly}s / 발송전:{api_before_send}s / "
+            f"발송후:{api_after_send}s / 캡처대기:{api_capture_dly}s / "
+            f"링크간격:{tg_min}~{tg_max}s / 계정전환:{sw_dly}s", "INFO")
 
         def _log_fn(msg, lv="INFO"):
             self._log(msg, lv)
@@ -8009,19 +8322,44 @@ class WorkflowExecutor:
         eng = _get_tg_engine(_log_fn)
         eng.load_accounts(accounts)
 
-        # ── 계정 사전 연결 ─────────────────────────────────
+        # ── 계정 사전 연결 (연결 딜레이 적용) ─────────────────
         active_accounts = []
-        for acct in accounts:
+        for i, acct in enumerate(accounts):
+            if i > 0 and api_connect_dly > 0:
+                time.sleep(api_connect_dly)  # 계정 간 연결 딜레이
             if eng.connect(acct):
                 active_accounts.append(acct)
         if not active_accounts:
             self._log("연결 가능한 계정이 없습니다.", "ERROR")
             return
 
-        tg_min  = safe_float(self.tmpl.get("tg_between_min", 3.0))
-        tg_max  = safe_float(self.tmpl.get("tg_between_max", 7.0))
-        sw_dly  = safe_float(self.tmpl.get("account_switch_delay", 1.0))
         n_accts = len(active_accounts)
+
+        def _do_send_one(acct, peer, msg, idx, total_cnt):
+            """단일 발송 + 캡처 + 딜레이 처리"""
+            self._log(f"[{idx+1}/{total_cnt}] [{acct.get('name','')}] → {peer}")
+            # 발송 전 딜레이
+            if api_before_send > 0:
+                time.sleep(api_before_send)
+            ok = eng.send_message(acct, peer, msg, self._stop,
+                                  img_path=img_path)
+            if ok:
+                self._succ += 1
+                self._record(peer, "성공")
+            else:
+                self._fail += 1
+                self._record(peer, "실패")
+            if self._report_rows:
+                self._report_rows[-1]["계정"] = acct.get("name", "")
+            # 발송 후 딜레이
+            if api_after_send > 0:
+                time.sleep(api_after_send)
+            # 발송 후 채팅 캡처 (성공 시만)
+            if ok and api_capture_on:
+                self._tg_capture_chat(eng, acct, peer,
+                                      capture_delay=api_capture_dly,
+                                      n_msgs=api_capture_n)
+            return ok
 
         if mode == "zigzag":
             for idx, row in enumerate(rows):
@@ -8034,21 +8372,11 @@ class WorkflowExecutor:
                     self._fail += 1; continue
                 acct = active_accounts[idx % n_accts]
                 msg  = self._apply_vars(message, row)
-                self._log(f"[{idx+1}/{total}] [{acct['name']}] → {peer}")
-                ok = eng.send_message(acct, peer, msg, self._stop,
-                                      img_path=img_path)
-                if ok:
-                    self._succ += 1
-                    self._record(peer, "성공")
-                    if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
-                else:
-                    self._fail += 1
-                    self._record(peer, "실패")
-                    if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
-                # [CRIT-04 fix] 계정 경계에서 sw_dly 또는 tg_min~max 중 하나만 적용
-                # 이전: sw_dly sleep 후 이어서 tg_min~max sleep → 이중 sleep 버그
-                if idx % n_accts == n_accts - 1:
-                    if self._sleep_or_stop(sw_dly): break
+                _do_send_one(acct, peer, msg, idx, total)
+                # [CRIT-04 fix] 계정 경계에서 sw_dly 또는 tg_min~max 중 하나만
+                if n_accts > 1 and idx % n_accts == n_accts - 1:
+                    # 계정 전환 시 warmup 추가
+                    if self._sleep_or_stop(sw_dly + api_warmup_add): break
                 else:
                     if self._sleep_or_stop(
                             random.uniform(tg_min, tg_max)): break
@@ -8056,7 +8384,9 @@ class WorkflowExecutor:
         elif mode == "split":
             chunk = max(1, (total + n_accts - 1) // n_accts)
             for i, acct in enumerate(active_accounts):
-                if self._is_stopped(): break          # [BUG-04 fix] 외부 루프 중지 체크
+                if self._is_stopped(): break
+                if i > 0:
+                    if self._sleep_or_stop(sw_dly + api_warmup_add): break
                 segment = rows[i*chunk : (i+1)*chunk]
                 for idx, row in enumerate(segment):
                     if self._is_stopped(): break
@@ -8068,24 +8398,16 @@ class WorkflowExecutor:
                     abs_idx = i*chunk + idx
                     self._progress(abs_idx+1, total)
                     msg = self._apply_vars(message, row)
-                    self._log(f"[{abs_idx+1}/{total}] [{acct['name']}] → {peer}")
-                    ok = eng.send_message(acct, peer, msg, self._stop,
-                                          img_path=img_path)
-                    if ok:
-                        self._succ += 1
-                        self._record(peer, "성공")
-                        if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
-                    else:
-                        self._fail += 1
-                        self._record(peer, "실패")
-                        if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
+                    _do_send_one(acct, peer, msg, abs_idx, total)
                     if self._sleep_or_stop(
                             random.uniform(tg_min, tg_max)): break
 
         else:  # all
-            for acct in active_accounts:
+            for i, acct in enumerate(active_accounts):
                 if self._is_stopped(): break
-                self._log(f"[{acct['name']}] 전체 {total}명 발송 시작")
+                if i > 0:
+                    if self._sleep_or_stop(sw_dly + api_warmup_add): break
+                self._log(f"[{acct.get('name','')}] 전체 {total}명 발송 시작")
                 for idx, row in enumerate(rows):
                     if self._is_stopped(): break
                     peer = str(row.get("텔레그램링크",
@@ -8095,19 +8417,9 @@ class WorkflowExecutor:
                         self._fail += 1; continue
                     self._progress(idx+1, total)
                     msg = self._apply_vars(message, row)
-                    ok = eng.send_message(acct, peer, msg, self._stop,
-                                          img_path=img_path)
-                    if ok:
-                        self._succ += 1
-                        self._record(peer, "성공")
-                        if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
-                    else:
-                        self._fail += 1
-                        self._record(peer, "실패")
-                        if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
+                    _do_send_one(acct, peer, msg, idx, total)
                     if self._sleep_or_stop(
                             random.uniform(tg_min, tg_max)): break
-                if self._sleep_or_stop(sw_dly): break
 
         self._log(f"[Telethon] 완료 — 성공:{self._succ} / 실패:{self._fail}",
                   "SUCCESS")
