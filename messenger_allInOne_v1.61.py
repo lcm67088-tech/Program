@@ -1352,7 +1352,7 @@
 #
 from __future__ import annotations
 
-import json, os, sys, threading, time, random, string, re, queue
+import json, sys, threading, time, random, string, re, queue, asyncio
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -1514,11 +1514,9 @@ def _migrate_legacy_json() -> int:
     for fpath in sorted(JOBS_DIR.glob("*.json")):
         # ── MIGRATE-1 + MIGRATE-9: 인코딩 폴백 읽기 ─────────────────────────
         raw = None
-        used_enc = "utf-8"
         for enc in ("utf-8-sig", "utf-8", "cp949", "latin-1"):
             try:
                 raw = fpath.read_text(encoding=enc)
-                used_enc = enc
                 break
             except (UnicodeDecodeError, LookupError):
                 continue
@@ -3227,7 +3225,7 @@ class TemplateTab(tk.Frame):
                         text=f"  ✅ 중복 {dup_cnt}개 제거 → {len(unique)}개 남음")
                 else:
                     self._tgt_dedup_lbl.config(text="  ✅ 중복 없음")
-        except Exception as e:
+        except Exception:
             pass
 
     def _browse_target_csv(self):
@@ -3455,7 +3453,7 @@ class TemplateTab(tk.Frame):
         else:
             # 카카오 전용: 클립보드 없음
             _img_mode_opts = [("file",    "📁 파일 경로"),
-                              ("dragdrop","🖱️ 드래그앤드롭")]
+                              ("dragdrop","🖱️ 드래그 앤 드롭")]
 
         # ── 버튼형 탭 (Radiobutton 대신 토글 버튼 스타일) ──────────────
         _img_mode_btns = {}
@@ -5233,17 +5231,18 @@ class TemplateTab(tk.Frame):
         def _do_capture():
             for i in range(3, 0, -1):
                 self.app._set_status(f"⏳ [{key}] {i}초 후 캡처…")
-                import time as _t; _t.sleep(1)
+                time.sleep(1)
             try:
                 x, y = pyautogui.position()
                 xv.set(str(x)); yv.set(str(y))
                 if disp_lbl:
                     # 캡처 성공: 연초록 배경 + 굵은 좌표 표시
-                    self.after(0, lambda: disp_lbl.config(
-                        text=f"✓ ({x}, {y})",
+                    # x, y를 기본인자로 캡처해야 람다 클로저 버그 방지
+                    self.after(0, lambda _x=x, _y=y, _d=disp_lbl: _d.config(
+                        text=f"✓ ({_x}, {_y})",
                         bg="#ECFDF5", fg="#065F46"))
                     if disp_wrap:
-                        self.after(0, lambda: disp_wrap.config(bg="#ECFDF5"))
+                        self.after(0, lambda _dw=disp_wrap: _dw.config(bg="#ECFDF5"))
                 self.app._set_status(f"✅ [{key}] 캡처: ({x}, {y})")
             except Exception as ex:
                 messagebox.showerror("캡처 실패", str(ex))
@@ -5659,8 +5658,6 @@ class TemplateTab(tk.Frame):
         self._tmpl_lb.delete(0, tk.END)
         for t in self._templates:
             plat = t.get("platform", "")
-            wk   = t.get("workflow", "")
-            wdef = PLATFORM_WORKFLOWS.get(wk, {})
             icon = "🟡" if plat == "kakao" else "🔵"
             self._tmpl_lb.insert(
                 tk.END,
@@ -5693,10 +5690,10 @@ class TemplateTab(tk.Frame):
             if hasattr(self, "_name_entry") and self._name_entry.winfo_exists():
                 self._name_entry.focus_set()
                 self._name_entry.select_range(0, tk.END)
-                # 노란 배경으로 0.5초 강조
+                # 노란 배경으로 0.5초 강조 (orig_bg를 기본인자로 캡처)
                 orig_bg = self._name_entry.cget("bg")
                 self._name_entry.config(bg="#FEF9C3")
-                self.after(500, lambda: self._name_entry.config(bg=orig_bg))
+                self.after(500, lambda bg=orig_bg: self._name_entry.config(bg=bg))
         except Exception:
             pass
 
@@ -6116,7 +6113,6 @@ class JobsTab(tk.Frame):
     # ── 작업 로드/저장 ───────────────────────────────────────
     def _refresh_time_estimate(self):
         """v1.60 STEP-6: ETA 패널 갱신 — 전체 소요시간 / 예상 완료시각 계산"""
-        from datetime import datetime as _dt_ref
         try:
             active = [j for j in self._jobs
                       if j.get("schedule_on") and j.get("enabled", True)]
@@ -6456,8 +6452,6 @@ class JobDialog(tk.Toplevel):
         canvas.bind("<MouseWheel>",
                     lambda e: canvas.yview_scroll(
                         int(-1*(e.delta/120)), "units"))
-
-        p = {"padx": 20, "pady": 6}
 
         def section(title):
             title_fr = tk.Frame(inner, bg=PALETTE["bg"])
@@ -7253,7 +7247,6 @@ class WorkflowExecutor:
             return ""
         try:
             import datetime as _dt
-            import asyncio as _aio
 
             time.sleep(capture_delay)  # 메시지 서버 반영 대기
 
@@ -7366,7 +7359,6 @@ class WorkflowExecutor:
         if not self._ss_enabled:
             return
         def _loop():
-            import time as _t
             while not self._ss_timer_stop.is_set():
                 # stop_event 대기 (interval 초 또는 중지 신호)
                 stopped = self._ss_timer_stop.wait(timeout=self._ss_interval)
@@ -7840,12 +7832,12 @@ class WorkflowExecutor:
                 drp_c = self.tmpl.get("image_drop_coord",   {})
                 if not (src_c.get("x") and src_c.get("y")):
                     self._log(
-                        "[실행불가] 드래그앤드롭 소스 좌표가 설정되지 않았습니다.",
+                        "[실행불가] 드래그 앤 드롭 소스 좌표가 설정되지 않았습니다.",
                         "ERROR")
                     return
                 if not (drp_c.get("x") and drp_c.get("y")):
                     self._log(
-                        "[실행불가] 드래그앤드롭 드롭 좌표가 설정되지 않았습니다.",
+                        "[실행불가] 드래그 앤 드롭 드롭 좌표가 설정되지 않았습니다.",
                         "ERROR")
                     return
 
@@ -7898,7 +7890,7 @@ class WorkflowExecutor:
 
                 # ② 이미지 첨부 — 메시지 전
                 if use_img and img_order == "before":
-                    self._log(f"  ② 이미지 첨부 (before) 시작")
+                    self._log("  ② 이미지 첨부 (before) 시작")
                     try:
                         self._drag_drop_image(img_path=img_path,
                                               delays=img_delays,
@@ -7924,10 +7916,10 @@ class WorkflowExecutor:
 
                 # ④ 전송
                 if send_method == "enter":
-                    self._log(f"  ④ 전송 — Enter")
+                    self._log("  ④ 전송 — Enter")
                     self._hotkey("return")
                 elif send_method == "ctrl_enter":
-                    self._log(f"  ④ 전송 — Ctrl+Enter")
+                    self._log("  ④ 전송 — Ctrl+Enter")
                     self._hotkey("ctrl", "return")
                 else:   # click_btn
                     sc = self.tmpl.get("send_btn_coord", {})
@@ -7943,7 +7935,7 @@ class WorkflowExecutor:
 
                 # ⑤ 이미지 첨부 — 메시지 후
                 if use_img and img_order == "after":
-                    self._log(f"  ⑤ 이미지 첨부 (after) 시작")
+                    self._log("  ⑤ 이미지 첨부 (after) 시작")
                     try:
                         self._drag_drop_image(img_path=img_path,
                                               delays=img_delays,
@@ -7956,10 +7948,10 @@ class WorkflowExecutor:
                 # ⑥ 창 닫기
                 if close_after:
                     if close_method == "esc":
-                        self._log(f"  ⑥ 창 닫기 — ESC")
+                        self._log("  ⑥ 창 닫기 — ESC")
                         pyautogui.press("escape")
                     elif close_method == "altf4":
-                        self._log(f"  ⑥ 창 닫기 — Alt+F4")
+                        self._log("  ⑥ 창 닫기 — Alt+F4")
                         pyautogui.hotkey("alt", "f4")
                     else:   # click_btn
                         cc = self.tmpl.get("close_btn_coord", {})
@@ -8062,7 +8054,7 @@ class WorkflowExecutor:
                        row.get("link", ""))).strip()
 
             if not link:
-                self._log(f"  ⚠️ 링크 없음 스킵", "WARN")
+                self._log("  ⚠️ 링크 없음 스킵", "WARN")
                 self._fail += 1
                 continue
 
@@ -8072,13 +8064,13 @@ class WorkflowExecutor:
                 result = self._telegram_join_once(link)
                 if result == "success":
                     self._succ += 1
-                    self._log(f"  ✅ 가입 완료", "SUCCESS")
+                    self._log("  ✅ 가입 완료", "SUCCESS")
                 elif result == "already":
                     self._succ += 1
-                    self._log(f"  ℹ️ 이미 가입됨", "INFO")
+                    self._log("  ℹ️ 이미 가입됨", "INFO")
                 else:
                     self._fail += 1
-                    self._log(f"  ❌ 가입 실패", "ERROR")
+                    self._log("  ❌ 가입 실패", "ERROR")
 
             except Exception as e:
                 self._fail += 1
@@ -8627,36 +8619,38 @@ class WorkflowExecutor:
           'Select File', '파일', 'File'
           → 그 외 변화(응답 없음, 다른 톡방, 앱 전환 등)는 모두 실패
         """
-        import time as _t
-
         # ── 포그라운드 창 타이틀 읽기 함수 구성 ──────────────
-        _get_title = None
-        try:
-            import win32gui as _wg
-            def _get_title():
-                try:
-                    return _wg.GetWindowText(_wg.GetForegroundWindow())
-                except Exception:
-                    return ""
-        except ImportError:
-            pass
-
-        if _get_title is None:
+        def _make_get_title():
+            """win32gui → pygetwindow 순으로 폴백하여 타이틀 함수 반환"""
+            try:
+                import win32gui as _wg
+                def _fn():
+                    try:
+                        return _wg.GetWindowText(_wg.GetForegroundWindow())
+                    except Exception:
+                        return ""
+                return _fn
+            except ImportError:
+                pass
             try:
                 import pygetwindow as _pgw
-                def _get_title():
+                def _fn():
                     try:
                         return _pgw.getActiveWindowTitle() or ""
                     except Exception:
                         return ""
+                return _fn
             except ImportError:
                 pass
+            return None
+
+        _get_title = _make_get_title()
 
         # ── 감지 불가 환경: 단순 대기 후 성공 간주 ───────────
         if _get_title is None:
             self._log("  ⚠️ [첨부버튼] 창 감지 라이브러리 없음 → 단순 대기", "WARN")
             pyautogui.click(ab_x, ab_y)
-            _t.sleep(d_dialog)
+            time.sleep(d_dialog)
             return
 
         # ── 재시도 루프 ───────────────────────────────────────
@@ -8679,7 +8673,7 @@ class WorkflowExecutor:
             poll      = 0.3
             opened    = False
             while elapsed < d_dialog:
-                _t.sleep(poll)
+                time.sleep(poll)
                 elapsed += poll
                 after_title = _get_title()
                 # 화이트리스트 키워드 포함 여부로 성공 판정
@@ -8703,7 +8697,7 @@ class WorkflowExecutor:
             self._log(
                 f"  ⚠️ [첨부버튼] 다이얼로그 미감지 "
                 f"(시도 {attempt}/{max_retry}) — 재시도", "WARN")
-            _t.sleep(0.5)
+            time.sleep(0.5)
 
         # 3회 모두 실패
         raise WorkflowExecutor._DialogSkipError(
@@ -8813,7 +8807,7 @@ class WorkflowExecutor:
                           drop_coord: dict = None,
                           delays: dict = None,
                           stop_event=None):
-        """이미지 드래그앤드롭 (kakao_drag_drop 방식)
+        """이미지 드래그 앤 드롭 (kakao_drag_drop 방식)
         src_coord  : {"x":..., "y":...} 이미지 소스 위치
         drop_coord : {"x":..., "y":...} 채팅창 입력 위치
         delays     : after_image_click / after_drag_start / after_drop / after_enter
@@ -8871,7 +8865,7 @@ class WorkflowExecutor:
             return
 
         # v1.52: 각 단계별 상세 로그 추가
-        self._log(f"[이미지] 드래그앤드롭 시작  소스({sx},{sy}) → 드롭({tx},{ty})")
+        self._log(f"[이미지] 드래그 앤 드롭 시작  소스({sx},{sy}) → 드롭({tx},{ty})")
 
         if _chk(): return
         _d1 = d.get("after_image_click", 0.5)
@@ -8905,7 +8899,7 @@ class WorkflowExecutor:
         pyautogui.press("enter")
         time.sleep(_d4)
 
-        self._log("[이미지] ✅ 드래그앤드롭 완료")
+        self._log("[이미지] ✅ 드래그 앤 드롭 완료")
 # ============================================================
 # PostingEngine — 큐 기반 단일 워커 실행 엔진  [v1.54 신규 — CHANGE-03]
 # community_poster v5.20 벤치마킹
@@ -9263,7 +9257,6 @@ def _calc_queue_eta(jobs: list, engine_current_name: str = "") -> list:
     v1.60: interval 모드 작업도 포함, next_run 기준 정렬
     """
     from datetime import datetime as _dt_eta, timedelta as _td_eta
-    import math as _math_eta
 
     now_eta = _dt_eta.now()
 
@@ -9624,7 +9617,6 @@ def _jobs_scheduler_tick(self):
             elif mode == "interval":
                 interval  = int(j.get("schedule_interval", 24))
                 last_raw  = j.get("last_run", "")
-                last_date = j.get("last_run_date", "")
                 fired     = False
 
                 if not last_raw:
@@ -9866,7 +9858,6 @@ class TelethonEngine:
           - 그 외 '0' 으로 시작하면 '0' 제거 후 '+' 만 붙임
             (정확한 국가코드를 알 수 없으면 사용자가 직접 +XX 형식 입력 권장)
         """
-        import re
         raw = re.sub(r"[\s\-\(\)]", "", str(phone).strip())  # 공백·하이픈·괄호 제거
         if not raw:
             return ""
@@ -9901,7 +9892,6 @@ class TelethonEngine:
         주의: 이 메서드는 self._lock 보유 중에 호출될 수 있으므로
         lock 을 획득하지 않음 (deadlock 방지). 호출자가 lock 관리 책임.
         """
-        import asyncio
         if phone not in self._loops:
             loop = asyncio.new_event_loop()
             self._loops[phone] = loop
@@ -9946,7 +9936,6 @@ class TelethonEngine:
 
     def _run_in_loop(self, loop, coro):
         """동기 컨텍스트에서 코루틴을 루프에서 실행"""
-        import asyncio
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result(timeout=60)
 
@@ -9972,7 +9961,6 @@ class TelethonEngine:
         otp_callback / password_callback 이 None 이면 백그라운드 자동실행
         (배치 작업) 중에는 세션 없는 계정을 건너뜀.
         """
-        import asyncio
         phone = self._normalize_phone(acct.get("phone", ""))  # 국제 형식 변환
         try:
             client, loop = self._ensure_client(acct)
@@ -10185,7 +10173,6 @@ class TelethonEngine:
 
     def disconnect_all(self):
         """모든 클라이언트 연결 해제"""
-        import asyncio
         # [CRIT-03 fix] 반복 중 _clients 가 다른 스레드에서 변경될 수 있으므로 list() 로 스냅샷
         for phone, client in list(self._clients.items()):
             loop = self._loops.get(phone)
