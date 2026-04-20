@@ -6315,11 +6315,13 @@ class JobsTab(tk.Frame):
                 sched_lbl = "없음"
             sched = f"{sched_icon} {sched_lbl}"
 
-            # ── v1.69: 반복 정보 스케줄 컬럼에 병기 ──────────────────
-            _rc = j.get("repeat_count", 1)
-            if _rc == 0:
+            # ── v1.69/v1.73: 반복 정보 스케줄 컬럼에 병기 ───────────
+            # repeat_on=True 일 때만 표시
+            _rc  = j.get("repeat_count", 1)
+            _ron = j.get("repeat_on", False)
+            if _ron and _rc == 0:
                 sched += "  🔁∞"
-            elif _rc > 1:
+            elif _ron and _rc > 1:
                 sched += f"  🔁{_rc}회"
 
             stat  = j.get("_status", "대기")
@@ -6416,6 +6418,13 @@ class JobsTab(tk.Frame):
                 j.get("last_run",       ""))
             dlg.result.setdefault("last_run_date",
                 j.get("last_run_date",  ""))
+            # ── v1.73: 수정 저장 시 반복 설정 보존 ───────────────────────
+            # 이전(v1.69): repeat_count/interval 을 setdefault 하지 않아
+            #   수정 후 저장하면 다이얼로그에서 읽어온 값으로 덮임
+            #   (체크박스 OFF 저장 시 0으로 덮어써지는 문제)
+            # 변경: 다이얼로그가 이미 최신값을 반환하므로 보존 불필요.
+            #   단, _file 키만 기존 j에서 이어받아야 함 (파일명 일치)
+            dlg.result.setdefault("_file", j.get("_file", ""))
             old = j.get("_file")
             if old and Path(old).exists():
                 Path(old).unlink()
@@ -6930,8 +6939,9 @@ class JobDialog(tk.Toplevel):
         top_row = tk.Frame(s, bg=PALETTE["bg"])
         top_row.pack(fill=tk.X, padx=12, pady=8)
 
+        # v1.73: repeat_on 키 직접 읽기 (이전: repeat_count!=0 으로 판단 → count=1이면 True가 되는 버그)
         self._repeat_on = tk.BooleanVar(
-            value=bool(self.data.get("repeat_count", 0)))
+            value=bool(self.data.get("repeat_on", False)))
         cb = tk.Checkbutton(top_row, text="반복 실행 사용",
                             variable=self._repeat_on,
                             bg=PALETTE["bg"], fg=PALETTE["text"],
@@ -6958,9 +6968,10 @@ class JobDialog(tk.Toplevel):
                  font=F_LABEL, width=14, anchor=tk.W,
                  bg=PALETTE["bg"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
-        _saved_cnt = self.data.get("repeat_count", 3)
+        # v1.73: 저장값 그대로 복원 (0=무제한도 "0"으로 표시, None이면 기본값 3)
+        _saved_cnt = self.data.get("repeat_count", None)
         self._repeat_count_var = tk.StringVar(
-            value=str(_saved_cnt) if _saved_cnt else "3")
+            value=str(_saved_cnt) if _saved_cnt is not None else "3")
         tk.Entry(cnt_row, textvariable=self._repeat_count_var,
                  width=6, relief=tk.FLAT,
                  bg=PALETTE["card2"], fg=PALETTE["text"],
@@ -7302,19 +7313,17 @@ class JobDialog(tk.Toplevel):
             "assigned_accounts": [p for p, v in
                                   getattr(self, "_acct_check_vars", [])
                                   if v.get()],
-            # ── 순차 반복 실행 설정 (v1.69) ──────────────────────────
+            # ── 순차 반복 실행 설정 (v1.69 / v1.73 fix) ──────────────────
+            # repeat_on=OFF 여도 입력값 그대로 저장 (0이면 비활성으로 인식)
+            # repeat_on=ON  이고 count=0 → 무제한 / count=1 → 1회(기존동작)
+            "repeat_on":       getattr(self, "_repeat_on",
+                                       tk.BooleanVar(value=False)).get(),
             "repeat_count":    safe_int(
                                    getattr(self, "_repeat_count_var",
-                                           tk.StringVar(value="0")).get(), 0)
-                               if getattr(self, "_repeat_on",
-                                          tk.BooleanVar(value=False)).get()
-                               else 0,
+                                           tk.StringVar(value="1")).get(), 1),
             "repeat_interval": safe_int(
                                    getattr(self, "_repeat_interval_var",
-                                           tk.StringVar(value="0")).get(), 0)
-                               if getattr(self, "_repeat_on",
-                                          tk.BooleanVar(value=False)).get()
-                               else 0,
+                                           tk.StringVar(value="0")).get(), 0),
         }
         self.destroy()
 # ============================================================
@@ -9847,16 +9856,16 @@ def _jobs_run_all(self):
             "⊙ 활성 토글 버튼으로 작업을 활성화하세요.")
         return
 
-    # ── v1.69: 반복 설정 확인 ────────────────────────────────────────
-    # repeat_count 가 1 이상(또는 0=무제한) 이고 repeat_on 작업이 있으면
-    # 별도 스레드에서 순환 반복 처리
-    _has_repeat = any(j.get("repeat_count", 0) != 1 and
-                      j.get("repeat_count", 0) >= 0
-                      for j in active_jobs
-                      if j.get("repeat_count", 1) != 1)
+    # ── v1.69/v1.73: 반복 설정 확인 ─────────────────────────────────
+    # repeat_on=True 이고 repeat_count != 1 인 작업이 하나라도 있으면 반복 모드
+    # repeat_on=False 이면 repeat_count 값과 관계없이 1회 실행
+    def _is_repeat_job(j):
+        if not j.get("repeat_on", False):
+            return False
+        rc = j.get("repeat_count", 1)
+        return rc != 1  # 0(무제한) 또는 2+ 이면 반복
 
-    # repeat_count 가 설정되지 않았거나 모두 1이면 기존 단순 실행
-    _any_repeat = any(j.get("repeat_count", 1) != 1 for j in active_jobs)
+    _any_repeat = any(_is_repeat_job(j) for j in active_jobs)
 
     if not _any_repeat:
         # ── 기존 동작: 1회 순차 실행 ────────────────────────────────
@@ -9868,15 +9877,15 @@ def _jobs_run_all(self):
     import threading as _th_repeat
     import time as _t_repeat
 
-    # 반복 횟수: repeat_count > 1 (실제 반복 설정) 인 작업만 수집
-    # 1 = 1회(기본), 0 = 무제한은 제외
-    # 여러 작업의 최댓값을 사용 → 가장 많이 반복하는 작업 기준으로 순환
+    # 반복 횟수: repeat_on=True 이고 repeat_count > 1 인 작업만 유한 반복
+    # 0 = 무제한, 1 = 1회(기본·비반복), 2+ = N회
     _finite = [j.get("repeat_count", 1) for j in active_jobs
-               if j.get("repeat_count", 1) > 1]
-    _max_rounds = max(_finite) if _finite else 0  # 0 = 무제한(혹은 모두 1회)
+               if _is_repeat_job(j) and j.get("repeat_count", 1) > 1]
+    _max_rounds = max(_finite) if _finite else 0  # 0 = 무제한
 
-    # 순환 간 대기: 반복 설정 작업들 중 최대 interval 사용
-    _gap = max((j.get("repeat_interval", 0) for j in active_jobs), default=0)
+    # 순환 간 대기: repeat_on=True 인 작업들 중 최대 interval
+    _gap = max((j.get("repeat_interval", 0) for j in active_jobs
+                if j.get("repeat_on", False)), default=0)
 
     # 중지 이벤트: _stop_all 시 engine.stop()이 호출되므로 그것으로 감지
     _stop_flag = [False]
@@ -9888,17 +9897,24 @@ def _jobs_run_all(self):
             _label = f"{_round}" if _max_rounds == 0 else f"{_round}/{_max_rounds}"
 
             # ── 이번 순환에 실행할 작업 결정 ────────────────────────
-            # repeat_count = 1 이면 첫 라운드만 실행
+            # repeat_on=False  → 첫 라운드만 실행 (비반복 작업)
+            # repeat_on=True, rc=0  → 무제한 반복
+            # repeat_on=True, rc=1  → 첫 라운드만 (1회)
+            # repeat_on=True, rc>1  → N라운드까지
             jobs_this_round = []
             for j in active_jobs:
                 rc = j.get("repeat_count", 1)
-                if rc == 0:                   # 무제한
+                ron = j.get("repeat_on", False)
+                if not ron:                        # 반복 OFF → 1라운드만
+                    if _round == 1:
+                        jobs_this_round.append(j)
+                elif rc == 0:                      # 무제한 반복
                     jobs_this_round.append(j)
-                elif rc == 1 and _round == 1: # 1회만
+                elif rc == 1 and _round == 1:      # 1회만
                     jobs_this_round.append(j)
-                elif rc > 1 and _round <= rc: # N회
+                elif rc > 1 and _round <= rc:      # N회
                     jobs_this_round.append(j)
-                # rc > 1 and _round > rc → 이미 횟수 소진, 스킵
+                # rc > 1 and _round > rc → 횟수 소진, 스킵
 
             if not jobs_this_round:
                 # 모든 작업이 횟수 소진 → 반복 종료
