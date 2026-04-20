@@ -2011,7 +2011,11 @@ def save_json(path: Path, data: Any) -> bool:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return True
-    except Exception:
+    except Exception as _e:
+        # v1.75: 오류 내용을 stderr에 출력 (디버깅용)
+        import sys as _sys_sj, traceback as _tb_sj
+        print(f"[save_json ERROR] path={path}  error={_e}", file=_sys_sj.stderr)
+        _tb_sj.print_exc(file=_sys_sj.stderr)
         return False
 
 def now_str() -> str:
@@ -6506,7 +6510,8 @@ class JobsTab(tk.Frame):
                                      if 0 <= i <= 6]
         fname = (data["name"].replace(" ","_")
                              .replace("/","_") + ".json")
-        if save_json(JOBS_DIR / fname, data):
+        _save_path = JOBS_DIR / fname
+        if save_json(_save_path, data):
             self.app._set_status(
                 f"✅ 작업 [{data['name']}] 저장")
             self._load_jobs()
@@ -6517,8 +6522,17 @@ class JobsTab(tk.Frame):
                 self._restart_scheduler()
             self.after(0, self._refresh_time_estimate)  # v1.60 P-17
         else:
+            # v1.75: 저장 실패 시 경로 + 권한 정보 포함 상세 메시지
+            _path_info = str(_save_path)
+            _parent_exists = _save_path.parent.exists()
             messagebox.showerror("저장 실패",
-                "작업 저장 중 오류가 발생했습니다.")
+                f"작업 파일 저장 중 오류가 발생했습니다.\n\n"
+                f"저장 경로: {_path_info}\n"
+                f"폴더 존재: {'✅' if _parent_exists else '❌ 없음'}\n\n"
+                f"해결 방법:\n"
+                f"• 프로그램을 관리자 권한으로 실행하세요\n"
+                f"• Config/jobs 폴더 쓰기 권한을 확인하세요\n"
+                f"• 바탕화면·다운로드 폴더에서 실행하세요")
 
     def _show_help(self):
         msg = (
@@ -6579,7 +6593,22 @@ class JobDialog(tk.Toplevel):
         self.resizable(False, False)
         self.configure(bg=PALETTE["bg"])
         self.grab_set()
-        self._build()
+        # v1.75: _build 예외 포착 — 예외 시에도 창이 뜨고 오류 메시지 표시
+        try:
+            self._build()
+        except Exception as _be:
+            import traceback as _tb_b
+            tk.Label(self,
+                     text=f"⚠️ UI 빌드 오류:\n{type(_be).__name__}: {_be}\n\n"
+                          f"개발자에게 문의하세요.",
+                     bg=PALETTE.get("bg", "#F0F2F5"),
+                     fg=PALETTE.get("danger", "#DC2626"),
+                     font=("Helvetica", 9),
+                     justify=tk.LEFT, wraplength=480,
+                     padx=20, pady=20
+                     ).pack(fill=tk.BOTH, expand=True)
+            print(f"[JobDialog._build ERROR] {_be}", flush=True)
+            _tb_b.print_exc()
         self.geometry("520x500")
 
     def _build(self):
@@ -7201,6 +7230,20 @@ class JobDialog(tk.Toplevel):
 
     # ── 저장 처리 ────────────────────────────────────────────
     def _ok(self):
+        # ── v1.75: 전체 try/except — 예외 발생 시 사용자에게 오류 메시지 표시 ──
+        try:
+            self._ok_inner()
+        except Exception as _e:
+            import traceback as _tb
+            messagebox.showerror(
+                "저장 오류",
+                f"작업 저장 중 예상치 못한 오류가 발생했습니다.\n\n"
+                f"{type(_e).__name__}: {_e}\n\n"
+                f"개발자 로그:\n{_tb.format_exc()[-800:]}"
+            )
+
+    def _ok_inner(self):
+        """실제 저장 처리 로직 (_ok의 try/except 내부에서 호출)"""
         name = self._jname_var.get().strip()
         if not name:
             messagebox.showwarning("입력 오류",
@@ -7209,7 +7252,8 @@ class JobDialog(tk.Toplevel):
         tmpl_name = self._tmpl_var.get().strip()
         if not tmpl_name:
             messagebox.showwarning("입력 오류",
-                "작업 템플릿을 선택하세요.")
+                "작업 템플릿을 선택하세요.\n\n"
+                "⚠️ 작업 템플릿 탭에서 템플릿을 먼저 만들어야 합니다.")
             return
 
         # 선택된 템플릿 데이터 가져오기
@@ -7227,14 +7271,14 @@ class JobDialog(tk.Toplevel):
         # ── v1.58 CHANGE-X13: 요일 숫자 인덱스 수집 (_sched_day_vars 우선) ────
         _DAY_LABELS_OK = ["월","화","수","목","금","토","일"]
         if hasattr(self, "_sched_day_vars") and self._sched_day_vars:
-            days = [i for i, v in enumerate(self._sched_day_vars) if v.get()]
+            days = [idx for idx, v in enumerate(self._sched_day_vars) if v.get()]
         elif hasattr(self, "_sched_days"):
             days = [_KR_TO_INT[d] for d, var in self._sched_days.items()
                     if var.get() and d in _KR_TO_INT]
         else:
             days = list(DEFAULT_SCHEDULE["days"])
-        # 하위호환 KR 리스트
-        sched_days = [_DAY_LABELS_OK[i] for i in days]
+        # 하위호환 KR 리스트 (범위 보호: 0~6만 허용)
+        sched_days = [_DAY_LABELS_OK[idx] for idx in days if 0 <= idx <= 6]
 
         # 복수 시각 파싱 + HH:MM 검증
         raw_times = self._sched_time.get()
@@ -7264,11 +7308,13 @@ class JobDialog(tk.Toplevel):
             if sched_mode == "time" and not sched_times:
                 messagebox.showwarning("시각 미입력",
                     "실행 시각을 1개 이상 입력하세요.\n"
-                    "예: 09:00  또는  09:00, 14:00, 19:00")
+                    "예: 09:00  또는  09:00, 14:00, 19:00\n\n"
+                    "💡 스케줄이 필요 없으면 '스케줄 사용' 체크를 해제하세요.")
                 return
             if not days:
                 messagebox.showwarning("요일 미선택",
-                    "실행 요일을 1개 이상 선택하세요.")
+                    "실행 요일을 1개 이상 선택하세요.\n\n"
+                    "💡 스케줄이 필요 없으면 '스케줄 사용' 체크를 해제하세요.")
                 return
 
         # sched_label 생성 (Treeview 스케줄 컬럼 표시용)
