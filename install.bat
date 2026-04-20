@@ -36,7 +36,7 @@ echo.
 
 :: ── 필수 패키지 설치 ─────────────────────────────────────────
 echo [2/4] 필수 패키지 설치 중... (requirements.txt)
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 if errorlevel 1 (
     echo.
     echo [오류] 필수 패키지 설치 중 문제가 발생했습니다.
@@ -59,7 +59,7 @@ set /p INSTALL_OPT=선택 패키지도 설치하시겠습니까? (y/N):
 if /i "%INSTALL_OPT%"=="y" (
     echo.
     echo    선택 패키지 설치 중... (requirements-optional.txt)
-    pip install -r requirements-optional.txt
+    python -m pip install -r requirements-optional.txt
     if errorlevel 1 (
         echo [경고] 선택 패키지 일부 설치 실패 - 계속 진행합니다.
     )
