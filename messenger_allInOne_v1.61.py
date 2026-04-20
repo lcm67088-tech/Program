@@ -5143,16 +5143,20 @@ class TemplateTab(tk.Frame):
             # chat_open_coord 제거됨 (grid_config 시작좌표로 대체)
 
         if wk not in ("kakao_friend", "kakao_openchat"):  # 텔레그램 계열 — kakao_friend/kakao_openchat 과 독립
-            # ▶ 텔레그램 계열 딜레이 저장
-            if hasattr(self, "_tg_chrome_load"):
-                data["tg_chrome_load"]   = safe_float(self._tg_chrome_load.get(),   2.0)
-                data["tg_telegram_open"] = safe_float(self._tg_tg_open.get(),       1.5)
-                data["tg_join_click"]    = safe_float(self._tg_join_click.get(),    2.0)
-                data["tg_after_type"]    = safe_float(self._tg_after_type.get(),    0.5)
-                data["tg_after_send"]    = safe_float(self._tg_after_send.get(),    1.0)
-                data["tg_after_back"]    = safe_float(self._tg_after_back.get(),    0.8)
-                data["tg_between_min"]   = safe_float(self._tg_between_min.get(),   3.0)
-                data["tg_between_max"]   = safe_float(self._tg_between_max.get(),   7.0)
+            # ▶ 텔레그램 계열 딜레이 저장 — 각 변수를 개별 hasattr 로 체크 (일부만 생성된 경우 대비)
+            _tg_delay_map = [
+                ("_tg_chrome_load",  "tg_chrome_load",   2.0),
+                ("_tg_tg_open",      "tg_telegram_open", 1.5),
+                ("_tg_join_click",   "tg_join_click",    2.0),
+                ("_tg_after_type",   "tg_after_type",    0.5),
+                ("_tg_after_send",   "tg_after_send",    1.0),
+                ("_tg_after_back",   "tg_after_back",    0.8),
+                ("_tg_between_min",  "tg_between_min",   3.0),
+                ("_tg_between_max",  "tg_between_max",   7.0),
+            ]
+            for _attr, _key, _default in _tg_delay_map:
+                if hasattr(self, _attr):
+                    data[_key] = safe_float(getattr(self, _attr).get(), _default)
             # ▶ Telethon 다계정 모드 저장
             if hasattr(self, "_account_mode_var"):
                 data["account_mode"] = self._account_mode_var.get()
@@ -6101,6 +6105,58 @@ class JobDialog(tk.Toplevel):
             self._update_tmpl_info()
         row(s2, "템플릿", _tmpl_w)
 
+        # ── 텔레그램 계정 선택 (Telethon 계정이 있을 때만 표시) ────────────────
+        tg_accounts = load_json(TG_ACCOUNTS_PATH, [])
+        if tg_accounts and HAS_TELETHON:
+            s_acct = section("📱 텔레그램 계정 선택")
+            hint_acct = tk.Label(
+                s_acct,
+                text="이 작업에 사용할 계정을 선택하세요. (미선택 시 전체 계정 사용)",
+                font=F_SMALL, bg=PALETTE["bg"], fg=PALETTE["muted"])
+            hint_acct.pack(anchor=tk.W, padx=12, pady=(0, 6))
+
+            # 저장된 계정 선택 상태 불러오기
+            _saved_assigned = set(self.data.get("assigned_accounts", []))
+
+            self._acct_check_vars: list[tuple[str, tk.BooleanVar]] = []
+            acct_frame = tk.Frame(s_acct, bg=PALETTE["bg"])
+            acct_frame.pack(fill=tk.X, padx=12, pady=(0, 8))
+
+            for _ac in tg_accounts:
+                _phone = TelethonEngine._normalize_phone(_ac.get("phone", ""))
+                _name  = _ac.get("name", _phone)
+                _var   = tk.BooleanVar(
+                    value=(_phone in _saved_assigned) or (not _saved_assigned))
+                self._acct_check_vars.append((_phone, _var))
+                _row = tk.Frame(acct_frame, bg=PALETTE["bg"])
+                _row.pack(fill=tk.X, pady=1)
+                tk.Checkbutton(
+                    _row, text=f"{_name}  ({_phone})",
+                    variable=_var,
+                    font=F_LABEL,
+                    bg=PALETTE["bg"], fg=PALETTE["text"],
+                    selectcolor=PALETTE["card2"],
+                    activebackground=PALETTE["bg"]
+                ).pack(side=tk.LEFT)
+
+            # 전체선택 / 전체해제 버튼
+            _btn_row = tk.Frame(s_acct, bg=PALETTE["bg"])
+            _btn_row.pack(anchor=tk.W, padx=12, pady=(0, 8))
+            def _sel_all():
+                for _, v in self._acct_check_vars: v.set(True)
+            def _sel_none():
+                for _, v in self._acct_check_vars: v.set(False)
+            tk.Button(_btn_row, text="전체선택", font=F_SMALL,
+                      bg=PALETTE["hover"], fg=PALETTE["text"],
+                      relief=tk.FLAT, cursor="hand2", padx=8,
+                      command=_sel_all).pack(side=tk.LEFT, padx=(0, 6))
+            tk.Button(_btn_row, text="전체해제", font=F_SMALL,
+                      bg=PALETTE["hover"], fg=PALETTE["text"],
+                      relief=tk.FLAT, cursor="hand2", padx=8,
+                      command=_sel_none).pack(side=tk.LEFT)
+        else:
+            self._acct_check_vars = []
+
         self._build_schedule_section(inner, row, section)
 
         # ── 저장 버튼 ───────────────────────────────────────
@@ -6590,6 +6646,10 @@ class JobDialog(tk.Toplevel):
                                      self._sched_interval.get(), 24),
             "interval_variance": _variance_val, # v1.58 신규
             "schedule_label":    sched_label,
+            # 계정 매칭: 선택된 전화번호 목록 (빈 리스트 = 전체 사용)
+            "assigned_accounts": [p for p, v in
+                                  getattr(self, "_acct_check_vars", [])
+                                  if v.get()],
         }
         self.destroy()
 # ============================================================
@@ -6617,6 +6677,8 @@ class WorkflowExecutor:
         self._stop      = stop_event  or threading.Event()
         self._succ      = 0
         self._fail      = 0
+        self._report_rows: list[dict] = []   # 발행 결과 행 (리포트용)
+        self._started_at = None              # 실행 시작 시각
         # ★ 실행 시작 시 FAILSAFE 설정 적용 (설정탭 값 반영)
         if HAS_PYAUTOGUI:
             try:
@@ -6742,7 +6804,60 @@ class WorkflowExecutor:
         return rows
 
     # ── 메인 실행 진입점 ─────────────────────────────────────
+    def _record(self, target: str, status: str, note: str = ""):
+        """발행 결과를 리포트 버퍼에 기록"""
+        import datetime as _dt
+        self._report_rows.append({
+            "시각":   _dt.datetime.now().strftime("%H:%M:%S"),
+            "대상":   target,
+            "결과":   status,          # 성공 / 실패 / 건너뜀
+            "비고":   note,
+            "계정":   "",              # 호출 측에서 덮어쓸 수 있음
+        })
+
+    def _save_report(self):
+        """실행 완료 후 CSV 리포트를 logs/ 에 저장"""
+        import datetime as _dt
+        import csv as _csv_rpt
+        if not self._report_rows:
+            return
+        try:
+            job_name  = self.job.get("name", "unknown")
+            wk        = self.wk
+            ts        = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            fname     = f"report_{job_name}_{wk}_{ts}.csv".replace(" ", "_")
+            rpt_path  = LOGS_DIR / fname
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            total     = len(self._report_rows)
+            succ      = sum(1 for r in self._report_rows if r["결과"] == "성공")
+            fail      = total - succ
+            elapsed   = ""
+            if self._started_at:
+                secs = int((_dt.datetime.now() - self._started_at).total_seconds())
+                elapsed = f"{secs // 60}분 {secs % 60}초"
+            with open(rpt_path, "w", newline="", encoding="utf-8-sig") as f:
+                # 헤더 요약 행
+                writer = _csv_rpt.writer(f)
+                writer.writerow(["# 리포트 요약"])
+                writer.writerow(["작업명", job_name])
+                writer.writerow(["워크플로우", wk])
+                writer.writerow(["총 건수", total])
+                writer.writerow(["성공", succ])
+                writer.writerow(["실패", fail])
+                writer.writerow(["소요시간", elapsed])
+                writer.writerow([])
+                # 상세 결과
+                fields = ["시각", "대상", "결과", "계정", "비고"]
+                writer.writerow(fields)
+                for row in self._report_rows:
+                    writer.writerow([row.get(k, "") for k in fields])
+            self._log(f"📄 리포트 저장 완료: {rpt_path.name}", "INFO")
+        except Exception as _re:
+            self._log(f"⚠️ 리포트 저장 실패: {_re}", "WARN")
+
     def run(self):
+        import datetime as _dt_run
+        self._started_at = _dt_run.datetime.now()
         dispatch = {
             "kakao_friend":    self._run_kakao_friend,
             "kakao_openchat":  self._run_kakao_openchat,
@@ -6759,6 +6874,7 @@ class WorkflowExecutor:
         except Exception as e:
             self._log(f"실행 중 오류: {e}", "ERROR")
         finally:
+            self._save_report()      # ★ 실행 완료 시 자동 리포트 저장
             self._done(self._succ, self._fail)
 
     # ════════════════════════════════════════════════════════
@@ -7307,8 +7423,19 @@ class WorkflowExecutor:
         if HAS_TELETHON:
             tg_accounts = load_json(TG_ACCOUNTS_PATH, [])
             if tg_accounts:
-                self._run_telegram_join_telethon(tg_accounts)
-                return
+                # ★ 작업에 assigned_accounts 가 있으면 해당 계정만 필터링
+                _assigned = self.job.get("assigned_accounts", [])
+                if _assigned:
+                    tg_accounts = [a for a in tg_accounts
+                                   if TelethonEngine._normalize_phone(
+                                       a.get("phone", "")) in _assigned]
+                    self._log(f"[TG] 지정 계정 {len(tg_accounts)}개로 실행 "
+                              f"(전체 중 {len(_assigned)}개 선택됨)")
+                if tg_accounts:
+                    self._run_telegram_join_telethon(tg_accounts)
+                    return
+                else:
+                    self._log("[TG] 선택된 계정이 없거나 매칭 실패 → pyautogui 폴백", "WARN")
             else:
                 self._log("[TG] Telethon 설치됨 — 계정 없음 → pyautogui 폴백 실행\n"
                           "     텔레그램 계정 탭에서 계정을 추가하면 API 방식으로 자동 전환됩니다.",
@@ -7425,8 +7552,14 @@ class WorkflowExecutor:
                 acct = active_accounts[idx % n_accts]
                 self._log(f"[{idx+1}/{total}] [{acct['name']}] 가입: {link}")
                 ok = eng.join_group(acct, link, self._stop)
-                if ok: self._succ += 1
-                else:  self._fail += 1
+                if ok:
+                    self._succ += 1
+                    _r = self._record(link, "성공"); _ = _r
+                    if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
+                else:
+                    self._fail += 1
+                    _r = self._record(link, "실패"); _ = _r
+                    if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
                 # [CRIT-04 fix] 계정 경계에서 sw_dly 또는 tg_min~max 중 하나만 적용
                 # 이전: sw_dly sleep 후 이어서 tg_min~max sleep → 이중 sleep 버그
                 if idx % n_accts == n_accts - 1:
@@ -7521,8 +7654,19 @@ class WorkflowExecutor:
         if HAS_TELETHON:
             tg_accounts = load_json(TG_ACCOUNTS_PATH, [])
             if tg_accounts:
-                self._run_telegram_message_telethon(tg_accounts)
-                return
+                # ★ 작업에 assigned_accounts 가 있으면 해당 계정만 필터링
+                _assigned = self.job.get("assigned_accounts", [])
+                if _assigned:
+                    tg_accounts = [a for a in tg_accounts
+                                   if TelethonEngine._normalize_phone(
+                                       a.get("phone", "")) in _assigned]
+                    self._log(f"[TG] 지정 계정 {len(tg_accounts)}개로 실행 "
+                              f"(전체 중 {len(_assigned)}개 선택됨)")
+                if tg_accounts:
+                    self._run_telegram_message_telethon(tg_accounts)
+                    return
+                else:
+                    self._log("[TG] 선택된 계정이 없거나 매칭 실패 → pyautogui 폴백", "WARN")
             else:
                 self._log("[TG] Telethon 설치됨 — 계정 없음 → pyautogui 폴백 실행\n"
                           "     텔레그램 계정 탭에서 계정을 추가하면 API 방식으로 자동 전환됩니다.",
@@ -7605,10 +7749,40 @@ class WorkflowExecutor:
                     else:
                         self._log("  ⚠️ join_btn_coord 미설정 → 가입 단계 건너뜀", "WARN")
 
-                # ② 이미지 첨부 (클립보드)
+                # ② 이미지 첨부 (클립보드) — 파일을 클립보드에 올린 뒤 Ctrl+V
                 if use_img and img_mode == "clipboard":
-                    pyautogui.hotkey("ctrl", "v")
-                    time.sleep(tg_type)
+                    _cb_ok = False
+                    if img_path and Path(img_path).exists():
+                        try:
+                            from PIL import Image as _CbImg
+                            import io as _CbIO
+                            try:
+                                import win32clipboard as _w32cb
+                                _img = _CbImg.open(img_path)
+                                _buf = _CbIO.BytesIO()
+                                _img.convert("RGB").save(_buf, "BMP")
+                                _bmp = _buf.getvalue()[14:]
+                                _buf.close()
+                                _w32cb.OpenClipboard()
+                                _w32cb.EmptyClipboard()
+                                _w32cb.SetClipboardData(_w32cb.CF_DIB, _bmp)
+                                _w32cb.CloseClipboard()
+                                _cb_ok = True
+                                self._log(f"  [클립보드] 이미지 복사 완료: {Path(img_path).name}")
+                            except ImportError:
+                                # win32clipboard 없을 때 pyperclip 대체 (텍스트 경로)
+                                self._log("  ⚠️ win32clipboard 미설치 — Ctrl+C 방식으로 대체", "WARN")
+                                import pyperclip as _pc
+                                _pc.copy(str(img_path))
+                                _cb_ok = True
+                        except Exception as _cbe:
+                            self._log(f"  ⚠️ 클립보드 이미지 복사 실패: {_cbe}", "WARN")
+                    else:
+                        self._log("  ⚠️ 클립보드 모드인데 이미지 경로 없음 — 첨부 건너뜀", "WARN")
+                    if _cb_ok:
+                        time.sleep(0.3)   # 클립보드 안착 대기
+                        pyautogui.hotkey("ctrl", "v")
+                        time.sleep(tg_type)
 
                 # ③ 이미지 첨부 (파일경로)
                 elif use_img and img_mode == "file":
@@ -7705,8 +7879,14 @@ class WorkflowExecutor:
                 msg  = self._apply_vars(message, row)
                 self._log(f"[{idx+1}/{total}] [{acct['name']}] → {peer}")
                 ok = eng.send_message(acct, peer, msg, self._stop)
-                if ok: self._succ += 1
-                else:  self._fail += 1
+                if ok:
+                    self._succ += 1
+                    self._record(peer, "성공")
+                    if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
+                else:
+                    self._fail += 1
+                    self._record(peer, "실패")
+                    if self._report_rows: self._report_rows[-1]["계정"] = acct.get("name","")
                 # [CRIT-04 fix] 계정 경계에서 sw_dly 또는 tg_min~max 중 하나만 적용
                 # 이전: sw_dly sleep 후 이어서 tg_min~max sleep → 이중 sleep 버그
                 if idx % n_accts == n_accts - 1:
