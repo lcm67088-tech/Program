@@ -7432,7 +7432,14 @@ class WorkflowExecutor:
 
             # 파일 저장
             job_name  = self.job.get("name", "job").replace(" ", "_")
-            peer_safe = peer.lstrip("@").replace("/", "_")[:20]
+            # ★ t.me/username 형식에서 username만 추출, 그 외는 금지문자 제거
+            # Windows 파일명 금지문자(\/:*?"<>|)가 남지 않도록 처리
+            import re as _re_ps
+            _m_ps = _re_ps.search(r't\.me/([^/\s?#]+)', peer)
+            if _m_ps:
+                peer_safe = _m_ps.group(1)[:30]
+            else:
+                peer_safe = _re_ps.sub(r'[\\/:*?"<>|]', '_', peer.lstrip("@"))[:30]
             ts        = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
             fname     = f"chatlog_{job_name}_{peer_safe}_{ts}.txt"
             SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
