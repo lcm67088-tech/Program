@@ -1724,14 +1724,66 @@ _FFM = "Consolas"
 F_TITLE  = (_FF,  14, "bold")  # 탭 제목
 F_HEAD   = (_FF,  10, "bold")  # 섹션 헤더
 F_BODY   = (_FF,  10)          # 본문
-F_LABEL  = (_FF,   9)          # 라벨
-F_SMALL  = (_FF,   9)          # 보조/힌트
+F_LABEL  = (_FF,   9)          # 라벨 (입력 필드 라벨, 일반 항목)
+F_SMALL  = (_FF,   8)          # 보조/힌트 (경고문, 설명, 캡션) ← 8pt로 분리
 F_BTN    = (_FF,  10, "bold")  # 주요 버튼
 F_BTN_S  = (_FF,   9, "bold")  # 소형 버튼
 F_MONO   = (_FFM,  9)          # 입력창/좌표
-F_MONO_S = (_FFM,  9)
+F_MONO_S = (_FFM,  8)          # 보조 모노 (힌트용) ← 8pt로 분리
 F_MONO_B = (_FFM, 10, "bold")
 F_ICON   = ("Segoe UI Emoji", 16)
+
+# ============================================================
+# ToolTip — 마우스 호버 시 간단 설명 표시
+# ============================================================
+
+class ToolTip:
+    """위젯에 마우스를 올리면 작은 팝업 설명 표시"""
+    _delay = 600  # ms
+
+    def __init__(self, widget, text: str):
+        self._widget = widget
+        self._text   = text
+        self._tip    = None
+        self._job    = None
+        widget.bind("<Enter>",  self._schedule, add="+")
+        widget.bind("<Leave>",  self._cancel,   add="+")
+        widget.bind("<Button>", self._cancel,   add="+")
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        self._job = self._widget.after(self._delay, self._show)
+
+    def _cancel(self, _e=None):
+        if self._job:
+            self._widget.after_cancel(self._job)
+            self._job = None
+        self._hide()
+
+    def _show(self):
+        if self._tip: return
+        x = self._widget.winfo_rootx() + self._widget.winfo_width() // 2
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 6
+        self._tip = tk.Toplevel(self._widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        lbl = tk.Label(self._tip, text=self._text,
+                       font=(_FF, 8), justify=tk.LEFT,
+                       bg="#FFFDE7", fg="#333333",
+                       relief=tk.SOLID, bd=1,
+                       padx=6, pady=4, wraplength=260)
+        lbl.pack()
+
+    def _hide(self):
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+
+
+def add_tip(widget, text: str) -> "ToolTip":
+    """위젯에 ToolTip을 붙이고 반환"""
+    return ToolTip(widget, text)
+
 
 # ── 사이드바 탭 ─────────────────────────────────────────────
 SIDEBAR_TABS = [
@@ -2438,6 +2490,60 @@ class App(tk.Tk):
         save_json(STATS_PATH,  self.stats_data)
         self.destroy()
 # ============================================================
+# UI 공용 헬퍼 — 섹션 헤더 (4px 컬러바 + 우측 수평선 + 카드)
+# ============================================================
+
+def _make_section_header(parent: tk.Frame, title: str) -> tk.Frame:
+    """
+    편집 패널 어디서든 쓸 수 있는 통일된 섹션 헤더 + 카드 컨테이너.
+    반환값: 카드 Frame (내부 위젯을 이 안에 배치)
+    """
+    wrap = tk.Frame(parent, bg=PALETTE["bg"])
+    wrap.pack(fill=tk.X, padx=16, pady=(0, 10))
+    # 제목 행
+    title_row = tk.Frame(wrap, bg=PALETTE["bg"])
+    title_row.pack(fill=tk.X, pady=(0, 4))
+    tk.Frame(title_row, bg=PALETTE["primary"], width=4
+             ).pack(side=tk.LEFT, fill=tk.Y)
+    tk.Label(title_row, text=f"  {title}",
+             font=F_HEAD,
+             bg=PALETTE["bg"], fg=PALETTE["text"]
+             ).pack(side=tk.LEFT)
+    tk.Frame(title_row, bg=PALETTE["border"], height=1
+             ).pack(side=tk.LEFT, fill=tk.X, expand=True,
+                    padx=(12, 0), pady=6)
+    # 카드
+    card = tk.Frame(wrap, bg=PALETTE["card"],
+                    highlightbackground=PALETTE["border"],
+                    highlightthickness=1)
+    card.pack(fill=tk.X)
+    return card
+
+
+def _make_section_header_in(wrap: tk.Frame, title: str) -> tk.Frame:
+    """
+    기존 wrap 프레임에 헤더+카드를 추가 (wrap 자체는 외부에서 pack)
+    반환값: 카드 Frame
+    """
+    title_row = tk.Frame(wrap, bg=PALETTE["bg"])
+    title_row.pack(fill=tk.X, pady=(0, 4))
+    tk.Frame(title_row, bg=PALETTE["primary"], width=4
+             ).pack(side=tk.LEFT, fill=tk.Y)
+    tk.Label(title_row, text=f"  {title}",
+             font=F_HEAD,
+             bg=PALETTE["bg"], fg=PALETTE["text"]
+             ).pack(side=tk.LEFT)
+    tk.Frame(title_row, bg=PALETTE["border"], height=1
+             ).pack(side=tk.LEFT, fill=tk.X, expand=True,
+                    padx=(12, 0), pady=6)
+    card = tk.Frame(wrap, bg=PALETTE["card"],
+                    highlightbackground=PALETTE["border"],
+                    highlightthickness=1)
+    card.pack(fill=tk.X)
+    return card
+
+
+# ============================================================
 # Block 2-A : TemplateTab — 작업 템플릿 관리
 # ============================================================
 
@@ -2550,6 +2656,8 @@ class TemplateTab(tk.Frame):
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._tmpl_lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._tmpl_lb.bind("<<ListboxSelect>>", self._on_select)
+        # 더블클릭 → 이름 필드로 포커스 이동 (편집 모드 강조)
+        self._tmpl_lb.bind("<Double-Button-1>", self._on_dbl_click)
 
         # 구분선
         tk.Frame(parent, bg=PALETTE["border"], height=1).pack(fill=tk.X)
@@ -2644,7 +2752,7 @@ class TemplateTab(tk.Frame):
                      ).pack(fill=tk.X)
             inner = tk.Frame(r, bg=PALETTE["card"])
             inner.pack(fill=tk.X, padx=14, pady=7)
-            lbl = tk.Label(inner, text=label, width=14, anchor=tk.W,
+            lbl = tk.Label(inner, text=label, width=16, anchor=tk.W,
                      font=F_LABEL,
                      bg=PALETTE["card"], fg=PALETTE["text2"]
                      )
@@ -2669,6 +2777,7 @@ class TemplateTab(tk.Frame):
                      highlightthickness=1,
                      width=30)
             e.pack(side=tk.LEFT, ipady=3)
+            self._name_entry = e   # 더블클릭 포커스용 참조
         row(s1, "템플릿명", _name_w)
 
         # ════════════════════════════════════════════════════
@@ -2916,7 +3025,7 @@ class TemplateTab(tk.Frame):
             mode_row = tk.Frame(card, bg=PALETTE["card"])
             mode_row.pack(fill=tk.X, padx=12, pady=(10, 4))
             tk.Label(mode_row, text="입력 방식",
-                     width=14, anchor=tk.W,
+                     width=16, anchor=tk.W,
                      font=F_LABEL,
                      bg=PALETTE["card"], fg=PALETTE["text"]
                      ).pack(side=tk.LEFT)
@@ -2946,7 +3055,7 @@ class TemplateTab(tk.Frame):
         self._tgt_csv_frame.pack(fill=tk.X, padx=12, pady=8)
 
         r = self._tgt_csv_frame
-        tk.Label(r, text="CSV 파일", width=14, anchor=tk.W,
+        tk.Label(r, text="CSV 파일", width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -2984,7 +3093,7 @@ class TemplateTab(tk.Frame):
         di_top = tk.Frame(self._tgt_direct_frame, bg=PALETTE["card"])
         di_top.pack(fill=tk.X)
         tk.Label(di_top, text=direct_label,
-                 width=14, anchor=tk.W,
+                 width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -3164,10 +3273,9 @@ class TemplateTab(tk.Frame):
                 self._csv_hint_lbl.config(text=hint_text)
             except Exception:
                 pass
-            messagebox.showinfo(
-                "예시 파일 저장 완료",
-                f"저장 위치:\n{save_path}\n\n{data['hint']}"
-            )
+            # 정상 완료 → 상태바로 표시 (팝업 없음)
+            self.app._set_status(
+                f"✅ 예시 파일 저장: {Path(save_path).name}")
         except Exception as e:
             messagebox.showerror("저장 실패", str(e))
 
@@ -3200,19 +3308,12 @@ class TemplateTab(tk.Frame):
             return  # 메시지 불필요 → 숨김
 
         wrap = self._msg_section_wrap
-        tk.Label(wrap, text="💬 메시지",
-                 font=F_HEAD,
-                 bg=PALETTE["bg"], fg=PALETTE["text"]
-                 ).pack(anchor=tk.W, pady=(0, 6))
-        card = tk.Frame(wrap, bg=PALETTE["card"],
-                        highlightbackground=PALETTE["border"],
-                        highlightthickness=1)
-        card.pack(fill=tk.X)
+        card = _make_section_header_in(wrap, "💬 메시지")
 
         msg_frame = tk.Frame(card, bg=PALETTE["card"])
         msg_frame.pack(fill=tk.X, padx=12, pady=8)
         tk.Label(msg_frame, text="메시지 내용",
-                 width=14, anchor=tk.W,
+                 width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT, anchor=tk.N, pady=2)
@@ -3264,23 +3365,13 @@ class TemplateTab(tk.Frame):
         if not wdef.get("needs_image", False):
             return  # 이미지 불필요한 작업유형은 숨김
 
-        tk.Label(self._img_section_wrap,
-                 text="🖼️ 이미지 첨부 설정",
-                 font=F_HEAD,
-                 bg=PALETTE["bg"], fg=PALETTE["text"]
-                 ).pack(anchor=tk.W, pady=(0, 6))
-
-        card = tk.Frame(self._img_section_wrap,
-                        bg=PALETTE["card"],
-                        highlightbackground=PALETTE["border"],
-                        highlightthickness=1)
-        card.pack(fill=tk.X)
+        card = _make_section_header_in(self._img_section_wrap, "🖼️ 이미지 첨부 설정")
 
         # ── 이미지 사용 여부 토글 ──────────────────────────
         img_row = tk.Frame(card, bg=PALETTE["card"])
         img_row.pack(fill=tk.X, padx=12, pady=8)
         tk.Label(img_row, text="이미지 첨부",
-                 width=14, anchor=tk.W,
+                 width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -3340,7 +3431,7 @@ class TemplateTab(tk.Frame):
         self._img_mode_row = tk.Frame(card, bg=PALETTE["card"])
         self._img_mode_row.pack(fill=tk.X, padx=12, pady=(0, 6))
         tk.Label(self._img_mode_row, text="첨부 방식",
-                 width=14, anchor=tk.W,
+                 width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -3365,34 +3456,49 @@ class TemplateTab(tk.Frame):
             # 카카오 전용: 클립보드 없음
             _img_mode_opts = [("file",    "📁 파일 경로"),
                               ("dragdrop","🖱️ 드래그앤드롭")]
+
+        # ── 버튼형 탭 (Radiobutton 대신 토글 버튼 스타일) ──────────────
+        _img_mode_btns = {}
+
+        def _select_img_mode(val):
+            self._img_mode_var.set(val)
+            for v, btn in _img_mode_btns.items():
+                if v == val:
+                    btn.config(bg=PALETTE["primary"], fg="#FFFFFF",
+                               relief=tk.FLAT)
+                else:
+                    btn.config(bg=PALETTE["bg"], fg=PALETTE["text"],
+                               relief=tk.FLAT)
+            self._toggle_image_path()
+
         for val, lbl in _img_mode_opts:
-            tk.Radiobutton(
+            btn = tk.Button(
                 self._img_mode_row, text=lbl,
-                variable=self._img_mode_var,
-                value=val,
-                bg=PALETTE["card"], fg=PALETTE["text"],
-                selectcolor=PALETTE["active"],
-                activebackground=PALETTE["card"],
-                font=F_LABEL,
-                command=self._toggle_image_path,
-            ).pack(side=tk.LEFT, padx=(0, 20))
+                font=F_BTN_S,
+                relief=tk.FLAT,
+                cursor="hand2",
+                padx=10, pady=4,
+                command=lambda v=val: _select_img_mode(v),
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 4))
+            _img_mode_btns[val] = btn
+
+        # 초기 선택 상태 반영
+        _select_img_mode(_img_mode_default)
 
         # ── 텔레그램 전용: 파일첨부 버튼 좌표 / Telethon API 안내 ──────────────────
-        # · Telethon API 모드(계정 있음): 좌표 불필요 → 안내 배너만 표시
+        # · Telethon API 모드(계정 있음): 좌표 불필요 → 한 줄 인라인 안내만 표시
         # · pyautogui 폴백 모드: 좌표 입력 필요 → 좌표 행 표시
         if _is_tg:
             if _is_tg_api:
                 # ── Telethon API 모드: 파일은 API로 직접 전송 → 좌표 불필요 ──
-                _api_banner = tk.Frame(card, bg="#D1FAE5",
-                                       highlightbackground="#6EE7B7",
-                                       highlightthickness=1)
-                _api_banner.pack(fill=tk.X, padx=12, pady=(4, 8))
-                tk.Label(_api_banner,
-                         text="📡  Telethon API 모드 — 파일 경로 선택 시\n"
-                              "    좌표(첨부버튼/파일명 입력란)가 필요 없습니다.\n"
-                              "    API가 직접 파일을 전송합니다.",
-                         font=F_SMALL, bg="#D1FAE5",
-                         fg="#065F46", padx=10, pady=8, justify="left"
+                # (좌표 섹션에도 이미 API 배너가 있으므로 여기선 간결하게 한 줄만)
+                _api_note = tk.Frame(card, bg=PALETTE["card"])
+                _api_note.pack(fill=tk.X, padx=12, pady=(2, 8))
+                tk.Label(_api_note,
+                         text="ℹ️  API 모드: 파일 경로 선택 시 첨부버튼/파일명 좌표 입력 불필요",
+                         font=F_SMALL, bg=PALETTE["card"],
+                         fg="#065F46", padx=0, pady=4
                          ).pack(anchor="w")
                 # _toggle_image_path 에서 참조하므로 더미 Frame 생성 (pack 안 함)
                 self._tg_attach_row   = tk.Frame(card, bg=PALETTE["card"])
@@ -3408,7 +3514,7 @@ class TemplateTab(tk.Frame):
                 self._tg_attach_row = tk.Frame(card, bg=PALETTE["card"])
                 # 초기에는 숨김 (pack 안 함) — _toggle_image_path 에서 표시
                 tk.Label(self._tg_attach_row, text="첨부버튼 좌표",
-                         width=14, anchor=tk.W,
+                         width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"],
                          fg=PALETTE["accent"]).pack(side=tk.LEFT)
                 self._tg_attach_x = tk.StringVar(
@@ -3447,7 +3553,7 @@ class TemplateTab(tk.Frame):
                 self._tg_filename_row = tk.Frame(card, bg=PALETTE["card"])
                 # 초기에는 숨김 (_toggle_image_path 에서 표시)
                 tk.Label(self._tg_filename_row, text="파일명입력 좌표",
-                         width=14, anchor=tk.W,
+                         width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"],
                          fg=PALETTE["accent"]).pack(side=tk.LEFT)
                 self._tg_fname_x = tk.StringVar(
@@ -3486,7 +3592,7 @@ class TemplateTab(tk.Frame):
         self._img_path_row = tk.Frame(card, bg=PALETTE["card"])
         # pack 여부는 _toggle_image_path 가 결정 (초기 pack 제거)
         tk.Label(self._img_path_row, text="이미지 경로",
-                 width=14, anchor=tk.W,
+                 width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -3510,7 +3616,7 @@ class TemplateTab(tk.Frame):
         # pack 여부는 _toggle_image_path 가 결정 (초기 pack 제거)
         order_row = self._img_order_row
         tk.Label(order_row, text="첨부 순서",
-                 width=14, anchor=tk.W,
+                 width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -3533,7 +3639,7 @@ class TemplateTab(tk.Frame):
         if not _is_tg:
             self._img_src_row.pack(fill=tk.X, padx=12, pady=(0, 4))
         tk.Label(self._img_src_row, text="소스 좌표",
-                 width=14, anchor=tk.W,
+                 width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -3571,7 +3677,7 @@ class TemplateTab(tk.Frame):
         if not _is_tg:
             self._img_drop_row.pack(fill=tk.X, padx=12, pady=(0, 4))
         tk.Label(self._img_drop_row, text="드롭 좌표",
-                 width=14, anchor=tk.W,
+                 width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -3832,17 +3938,18 @@ class TemplateTab(tk.Frame):
             if HAS_TELETHON:
                 tg_accounts = load_json(TG_ACCOUNTS_PATH, [])
                 if tg_accounts:
-                    # Telethon 설치 + 계정 있음 → 좌표 불필요 안내
+                    # Telethon 설치 + 계정 있음 → 좌표 불필요, 섹션 전체 숨김
+                    # (이미지 섹션에 간결한 인라인 안내가 있으므로 여기선 배너만)
                     banner = tk.Frame(self._coord_section_wrap,
                                       bg="#D1FAE5",
                                       highlightbackground="#6EE7B7",
                                       highlightthickness=1)
-                    banner.pack(fill=tk.X, pady=(0, 8))
+                    banner.pack(fill=tk.X, pady=(0, 4))
                     tk.Label(banner,
-                             text="✅  Telethon API 모드로 실행됩니다. "
-                                  "아래 좌표 설정은 사용되지 않습니다.",
+                             text="✅  Telethon API 모드 — 메시지 발송·이미지 첨부·좌표 설정이 모두 API로 처리됩니다.\n"
+                                  "    아래 마우스 좌표 항목은 사용되지 않으므로 설정하지 않아도 됩니다.",
                              font=F_SMALL, bg="#D1FAE5",
-                             fg="#065F46", padx=10, pady=6
+                             fg="#065F46", padx=10, pady=7, justify="left"
                              ).pack(anchor="w")
                     return   # 좌표 섹션 렌더 불필요
                 else:
@@ -3873,23 +3980,15 @@ class TemplateTab(tk.Frame):
                          fg="#92400E", padx=10, pady=6, justify="left"
                          ).pack(anchor="w")
 
-        tk.Label(self._coord_section_wrap,
-                 text="🖱️ 좌표 설정",
-                 font=F_HEAD,
-                 bg=PALETTE["bg"], fg=PALETTE["text"]
-                 ).pack(anchor=tk.W, pady=(0, 6))
-        tk.Label(self._coord_section_wrap,
-                 text="📸 캡처 버튼 클릭 → 3초 후 마우스 위치 저장  "
-                      "/ 영역은 드래그로 지정",
+        card = _make_section_header_in(self._coord_section_wrap, "🖱️ 좌표 설정")
+        # 캡처 안내 (카드 상단에 작은 캡션)
+        _cap_row = tk.Frame(card, bg=PALETTE["card"])
+        _cap_row.pack(fill=tk.X, padx=12, pady=(6, 0))
+        tk.Label(_cap_row,
+                 text="📸 캡처 버튼 클릭 → 3초 후 마우스 위치 저장  /  영역은 드래그로 지정",
                  font=F_SMALL,
-                 bg=PALETTE["bg"], fg=PALETTE["text"]
-                 ).pack(anchor=tk.W, pady=(0, 6))
-
-        card = tk.Frame(self._coord_section_wrap,
-                        bg=PALETTE["card"],
-                        highlightbackground=PALETTE["border"],
-                        highlightthickness=1)
-        card.pack(fill=tk.X)
+                 bg=PALETTE["card"], fg=PALETTE["muted"]
+                 ).pack(anchor=tk.W)
 
         for i, (key, label, ctype) in enumerate(
                 zip(keys, labels, types)):
@@ -3901,7 +4000,7 @@ class TemplateTab(tk.Frame):
         r.pack(fill=tk.X, padx=12, pady=5)
 
         # 라벨
-        tk.Label(r, text=label, width=18, anchor=tk.W,
+        tk.Label(r, text=label, width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -3951,15 +4050,18 @@ class TemplateTab(tk.Frame):
                          relief=tk.FLAT,
                          font=F_MONO
                          ).pack(side=tk.LEFT)
-            # 현재 좌표 표시 라벨
-            disp = tk.Label(r, text="",
-                            font=F_MONO_S,
+            # 현재 좌표 표시 라벨 (캡처 성공 시 연초록 배경 + 굵게 강조)
+            disp_wrap = tk.Frame(r, bg=PALETTE["card"])
+            disp_wrap.pack(side=tk.LEFT, padx=(6, 0))
+            disp = tk.Label(disp_wrap, text="",
+                            font=(_FFM, 8, "bold"),
                             bg=PALETTE["card"],
-                            fg=PALETTE["success_text"])
-            disp.pack(side=tk.LEFT, padx=(6, 0))
+                            fg=PALETTE["success_text"],
+                            padx=5, pady=2)
+            disp.pack()
             tk.Button(r, text="📸 캡처",
-                      command=lambda k=key, x=xv, y=yv, d=disp:
-                          self._capture_point(k, x, y, d),
+                      command=lambda k=key, x=xv, y=yv, d=disp, dw=disp_wrap:
+                          self._capture_point(k, x, y, d, dw),
                       bg=PALETTE["primary"], fg="#FFFFFF",
                       relief=tk.FLAT, font=F_SMALL,
                       cursor="hand2", padx=6, pady=2
@@ -4014,7 +4116,7 @@ class TemplateTab(tk.Frame):
             def _row2(label, widget_fn):
                 r = tk.Frame(card, bg=PALETTE["card"])
                 r.pack(fill=tk.X, padx=12, pady=6)
-                tk.Label(r, text=label, width=14, anchor=tk.W,
+                tk.Label(r, text=label, width=16, anchor=tk.W,
                          font=F_LABEL,
                          bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
@@ -4074,7 +4176,7 @@ class TemplateTab(tk.Frame):
             # 미리보기
             prev_row = tk.Frame(card, bg=PALETTE["card"])
             prev_row.pack(fill=tk.X, padx=12, pady=(2, 8))
-            tk.Label(prev_row, text="미리보기", width=14, anchor=tk.W,
+            tk.Label(prev_row, text="미리보기", width=16, anchor=tk.W,
                      font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                      ).pack(side=tk.LEFT)
             self._id_preview_lbl = tk.Label(
@@ -4115,19 +4217,10 @@ class TemplateTab(tk.Frame):
 
         wk = self._wtype_var.get()
 
-        # ─ 섹션 제목 & 카드 헬퍼 ─────────────────────────
+        # ─ 섹션 제목 & 카드 헬퍼 (통일된 4px 컬러바 방식) ──
         def _make_card():
-            tk.Label(self._timing_section_wrap,
-                     text="⏱️ 딜레이 설정",
-                     font=F_HEAD,
-                     bg=PALETTE["bg"], fg=PALETTE["text"]
-                     ).pack(anchor=tk.W, pady=(0, 6))
-            card = tk.Frame(self._timing_section_wrap,
-                            bg=PALETTE["card"],
-                            highlightbackground=PALETTE["border"],
-                            highlightthickness=1)
-            card.pack(fill=tk.X)
-            return card
+            return _make_section_header_in(
+                self._timing_section_wrap, "⏱️ 딜레이 설정")
 
         def _row(parent):
             r = tk.Frame(parent, bg=PALETTE["card"])
@@ -4250,7 +4343,7 @@ class TemplateTab(tk.Frame):
             card = _make_card()
             # 행1: OCR/입력 관련
             r1 = _row(card)
-            tk.Label(r1, text="단계 타이밍", width=14, anchor=tk.W,
+            tk.Label(r1, text="단계 타이밍", width=16, anchor=tk.W,
                      font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                      ).pack(side=tk.LEFT)
             self._kf_after_ctrlA      = tk.StringVar(value=str(self._cur("after_ctrlA",      2.0)))
@@ -4266,7 +4359,7 @@ class TemplateTab(tk.Frame):
                 _field(r1, lbl_t, var)
             # 행2
             r2 = _row(card)
-            tk.Label(r2, text="", width=14, anchor=tk.W,
+            tk.Label(r2, text="", width=16, anchor=tk.W,
                      font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                      ).pack(side=tk.LEFT)
             for lbl_t, var in [
@@ -4276,7 +4369,7 @@ class TemplateTab(tk.Frame):
                 _field(r2, lbl_t, var)
             # 행3: 간격/지터 (kakao_friend 전용 변수명 사용)
             r3 = _row(card)
-            tk.Label(r3, text="ID 간격", width=14, anchor=tk.W,
+            tk.Label(r3, text="ID 간격", width=16, anchor=tk.W,
                      font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                      ).pack(side=tk.LEFT)
             self._kf_between_var = tk.StringVar(
@@ -4299,36 +4392,40 @@ class TemplateTab(tk.Frame):
                 and bool(load_json(TG_ACCOUNTS_PATH, []))
             )
 
-            # ── 모드 표시 배너 ───────────────────────────────
-            _banner_frame = tk.Frame(self._timing_section_wrap,
-                                     bg="#D1FAE5" if _is_tg_api_delay else "#FEF3C7",
-                                     highlightbackground="#6EE7B7" if _is_tg_api_delay else "#FCD34D",
-                                     highlightthickness=1)
-            _banner_frame.pack(fill=tk.X, pady=(0, 8))
-            tk.Label(_banner_frame,
-                     text=("📡  Telethon API 모드 — 딜레이 설정"
+            # ── 섹션 헤더 (4px 컬러바) + 카드 ──────────────────
+            card = _make_card()
+
+            # ── 모드 표시 배너 (카드 내부 최상단) ─────────────
+            _banner_bg  = "#D1FAE5" if _is_tg_api_delay else "#FEF3C7"
+            _banner_bdr = "#6EE7B7" if _is_tg_api_delay else "#FCD34D"
+            _banner_fg  = "#065F46" if _is_tg_api_delay else "#92400E"
+            _banner_txt = ("📡  Telethon API 모드  ·  단계별 딜레이 설정"
                            if _is_tg_api_delay else
-                           "🖱️  일반(pyautogui) 모드 — 딜레이 설정"),
+                           "🖱️  일반(pyautogui) 모드  ·  크롬 자동화 딜레이 설정")
+            _banner_frame = tk.Frame(card,
+                                     bg=_banner_bg,
+                                     highlightbackground=_banner_bdr,
+                                     highlightthickness=1)
+            _banner_frame.pack(fill=tk.X, padx=12, pady=(8, 4))
+            tk.Label(_banner_frame,
+                     text=_banner_txt,
                      font=(_FF, 9, "bold"),
-                     bg="#D1FAE5" if _is_tg_api_delay else "#FEF3C7",
-                     fg="#065F46" if _is_tg_api_delay else "#92400E",
+                     bg=_banner_bg, fg=_banner_fg,
                      padx=10, pady=5
                      ).pack(anchor="w")
 
             if _is_tg_api_delay:
                 # ════ Telethon API 모드 딜레이 ════════════════
-                card = _make_card()
-
-                # 섹션 헤더
+                # 서브 헤더
                 _sh = tk.Frame(card, bg=PALETTE["card"])
-                _sh.pack(fill=tk.X, padx=12, pady=(8, 2))
+                _sh.pack(fill=tk.X, padx=12, pady=(4, 2))
                 tk.Label(_sh, text="[API 단계별 딜레이]",
                          font=(_FF, 9, "bold"), bg=PALETTE["card"],
                          fg=PALETTE["primary"]).pack(anchor="w")
 
                 # 행A: 연결 / 재연결
                 rA = _row(card)
-                tk.Label(rA, text="연결 단계", width=14, anchor=tk.W,
+                tk.Label(rA, text="연결 단계", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._tg_api_connect_delay = tk.StringVar(
@@ -4343,7 +4440,7 @@ class TemplateTab(tk.Frame):
 
                 # 행B: 발송 전후
                 rB = _row(card)
-                tk.Label(rB, text="발송 전후", width=14, anchor=tk.W,
+                tk.Label(rB, text="발송 전후", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._tg_api_before_send = tk.StringVar(
@@ -4358,7 +4455,7 @@ class TemplateTab(tk.Frame):
 
                 # 행C: 캡처
                 rC = _row(card)
-                tk.Label(rC, text="발송 후 캡처", width=14, anchor=tk.W,
+                tk.Label(rC, text="발송 후 캡처", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._tg_api_capture_delay = tk.StringVar(
@@ -4383,7 +4480,7 @@ class TemplateTab(tk.Frame):
 
                 # 행D: 링크 간격
                 rD = _row(card)
-                tk.Label(rD, text="링크 간격", width=14, anchor=tk.W,
+                tk.Label(rD, text="링크 간격", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._tg_between_min = tk.StringVar(
@@ -4398,7 +4495,7 @@ class TemplateTab(tk.Frame):
 
                 # 행E: 계정 분배
                 rE = _row(card)
-                tk.Label(rE, text="계정 분배 모드", width=14, anchor=tk.W,
+                tk.Label(rE, text="계정 분배 모드", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._account_mode_var = tk.StringVar(
@@ -4419,18 +4516,27 @@ class TemplateTab(tk.Frame):
 
                 # 행F: 계정 전환
                 rF = _row(card)
-                tk.Label(rF, text="계정 전환", width=14, anchor=tk.W,
+                tk.Label(rF, text="계정 전환", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._account_sw_delay = tk.StringVar(
                     value=str(self._cur("account_switch_delay", 1.0)))
                 self._tg_api_acct_warmup = tk.StringVar(
                     value=str(self._cur("tg_api_acct_warmup", 0.5)))
-                for lbl_t, var in [
-                    ("전환대기(s)",   self._account_sw_delay),
-                    ("워밍업추가(s)", self._tg_api_acct_warmup),
+                for lbl_t, var, hint in [
+                    ("전환대기(s)",   self._account_sw_delay,
+                     "계정을 바꿀 때마다 기다리는 시간\n(너무 짧으면 Flood 오류 가능)"),
+                    ("워밍업추가(s)", self._tg_api_acct_warmup,
+                     "신규 or 장기 미사용 계정 첫 전송 시\n추가로 기다리는 준비 시간"),
                 ]:
                     _field(rF, lbl_t, var)
+                    tip_lbl = tk.Label(rF, text="?",
+                                       font=(_FF, 7, "bold"),
+                                       bg=PALETTE["primary"], fg="#FFFFFF",
+                                       width=2, cursor="question_arrow",
+                                       relief=tk.FLAT)
+                    tip_lbl.pack(side=tk.LEFT, padx=(2, 8))
+                    add_tip(tip_lbl, hint)
 
                 # 더미 변수: 저장 시 hasattr 체크용 (pyautogui 전용 키 채우기)
                 self._tg_chrome_load = tk.StringVar(value="2.0")
@@ -4444,17 +4550,16 @@ class TemplateTab(tk.Frame):
 
             else:
                 # ════ pyautogui(일반) 모드 딜레이 ═════════════
-                card = _make_card()
-
+                # 서브 헤더
                 _sh = tk.Frame(card, bg=PALETTE["card"])
-                _sh.pack(fill=tk.X, padx=12, pady=(8, 2))
+                _sh.pack(fill=tk.X, padx=12, pady=(4, 2))
                 tk.Label(_sh, text="[크롬 자동화 단계별 딜레이]",
                          font=(_FF, 9, "bold"), bg=PALETTE["card"],
                          fg=PALETTE["accent"]).pack(anchor="w")
 
                 # 행1: 로딩/전환
                 r1 = _row(card)
-                tk.Label(r1, text="로딩 대기", width=14, anchor=tk.W,
+                tk.Label(r1, text="로딩 대기", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._tg_chrome_load = tk.StringVar(
@@ -4472,7 +4577,7 @@ class TemplateTab(tk.Frame):
 
                 # 행2: 메시지 관련
                 r2 = _row(card)
-                tk.Label(r2, text="메시지 딜레이", width=14, anchor=tk.W,
+                tk.Label(r2, text="메시지 딜레이", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._tg_after_type = tk.StringVar(
@@ -4490,7 +4595,7 @@ class TemplateTab(tk.Frame):
 
                 # 행3: 링크 간격
                 r3 = _row(card)
-                tk.Label(r3, text="링크 간격", width=14, anchor=tk.W,
+                tk.Label(r3, text="링크 간격", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._tg_between_min = tk.StringVar(
@@ -4505,7 +4610,7 @@ class TemplateTab(tk.Frame):
 
                 # 행4: 계정 분배 (pyautogui 모드에서도 표시, 추후 API 전환 대비)
                 r4 = _row(card)
-                tk.Label(r4, text="계정 분배 모드", width=14, anchor=tk.W,
+                tk.Label(r4, text="계정 분배 모드", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._account_mode_var = tk.StringVar(
@@ -4525,7 +4630,7 @@ class TemplateTab(tk.Frame):
                     ).pack(side=tk.LEFT, padx=(0, 8))
 
                 r5 = _row(card)
-                tk.Label(r5, text="계정 전환 딜레이", width=14, anchor=tk.W,
+                tk.Label(r5, text="계정 전환 딜레이", width=16, anchor=tk.W,
                          font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                          ).pack(side=tk.LEFT)
                 self._account_sw_delay = tk.StringVar(
@@ -4576,7 +4681,7 @@ class TemplateTab(tk.Frame):
         # ── 시작 좌표 ─────────────────────────────────────
         r0 = tk.Frame(card, bg=PALETTE["card"])
         r0.pack(fill=tk.X, padx=12, pady=(10, 4))
-        tk.Label(r0, text="시작 좌표", width=14, anchor=tk.W,
+        tk.Label(r0, text="시작 좌표", width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -4606,7 +4711,7 @@ class TemplateTab(tk.Frame):
         # ── 셀 크기 ────────────────────────────────────────
         r1 = tk.Frame(card, bg=PALETTE["card"])
         r1.pack(fill=tk.X, padx=12, pady=4)
-        tk.Label(r1, text="1칸 크기", width=14, anchor=tk.W,
+        tk.Label(r1, text="1칸 크기", width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -4631,7 +4736,7 @@ class TemplateTab(tk.Frame):
         # ── 구성 (열·행) ──────────────────────────────────── v1.52
         r2 = tk.Frame(card, bg=PALETTE["card"])
         r2.pack(fill=tk.X, padx=12, pady=4)
-        tk.Label(r2, text="구성", width=14, anchor=tk.W,
+        tk.Label(r2, text="구성", width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -4659,7 +4764,7 @@ class TemplateTab(tk.Frame):
         # ── 스캔 방향 ──────────────────────────────────────
         r3 = tk.Frame(card, bg=PALETTE["card"])
         r3.pack(fill=tk.X, padx=12, pady=4)
-        tk.Label(r3, text="방향", width=14, anchor=tk.W,
+        tk.Label(r3, text="방향", width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -4679,7 +4784,7 @@ class TemplateTab(tk.Frame):
         # ── 미리보기 ───────────────────────────────────────
         r4 = tk.Frame(card, bg=PALETTE["card"])
         r4.pack(fill=tk.X, padx=12, pady=(4, 10))
-        tk.Label(r4, text="미리보기", width=14, anchor=tk.W,
+        tk.Label(r4, text="미리보기", width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
@@ -4752,7 +4857,7 @@ class TemplateTab(tk.Frame):
         def row(label, widget_fn):
             r = tk.Frame(card, bg=PALETTE["card"])
             r.pack(fill=tk.X, padx=12, pady=8)
-            tk.Label(r, text=label, width=14, anchor=tk.W,
+            tk.Label(r, text=label, width=16, anchor=tk.W,
                      font=F_LABEL,
                      bg=PALETTE["card"], fg=PALETTE["text"]
                      ).pack(side=tk.LEFT)
@@ -4780,7 +4885,7 @@ class TemplateTab(tk.Frame):
                 value=str(self._cur("message_input_coord", {}).get("y", 0)))
 
             r_mi_coord = tk.Frame(card, bg=PALETTE["card"])
-            tk.Label(r_mi_coord, text="입력창 좌표", width=14, anchor=tk.W,
+            tk.Label(r_mi_coord, text="입력창 좌표", width=16, anchor=tk.W,
                      font=F_LABEL, bg=PALETTE["card"],
                      fg=PALETTE["accent"]).pack(side=tk.LEFT)
             for lbl_t, var in [("X:", self._sc_mi_x), ("Y:", self._sc_mi_y)]:
@@ -4849,7 +4954,7 @@ class TemplateTab(tk.Frame):
                 value=str(self._cur("tg_message_input_coord", {}).get("y", 0)))
 
             r_tg_mi = tk.Frame(card, bg=PALETTE["card"])
-            tk.Label(r_tg_mi, text="입력창 좌표", width=14, anchor=tk.W,
+            tk.Label(r_tg_mi, text="입력창 좌표", width=16, anchor=tk.W,
                      font=F_LABEL, bg=PALETTE["card"],
                      fg=PALETTE["accent"]).pack(side=tk.LEFT)
             for lbl_t, var in [("X:", self._tg_mi_x), ("Y:", self._tg_mi_y)]:
@@ -4918,7 +5023,7 @@ class TemplateTab(tk.Frame):
             value=str(self._cur("send_btn_coord", {}).get("y", 0)))
 
         r_sbtn = tk.Frame(card, bg=PALETTE["card"])
-        tk.Label(r_sbtn, text="전송버튼 좌표", width=14, anchor=tk.W,
+        tk.Label(r_sbtn, text="전송버튼 좌표", width=16, anchor=tk.W,
                  font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
         for lbl_t, var in [("X:", self._sc_send_btn_x),
@@ -4994,7 +5099,7 @@ class TemplateTab(tk.Frame):
             value=str(self._cur("close_btn_coord", {}).get("y", 0)))
 
         r_cbtn = tk.Frame(card, bg=PALETTE["card"])
-        tk.Label(r_cbtn, text="닫기버튼 좌표", width=14, anchor=tk.W,
+        tk.Label(r_cbtn, text="닫기버튼 좌표", width=16, anchor=tk.W,
                  font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
         for lbl_t, var in [("X:", self._sc_close_btn_x),
@@ -5066,7 +5171,7 @@ class TemplateTab(tk.Frame):
                 value=str(self._cur("join_btn_coord", {}).get("y", 0)))
 
             r_jb = tk.Frame(card, bg=PALETTE["card"])
-            tk.Label(r_jb, text="가입버튼 좌표", width=14, anchor=tk.W,
+            tk.Label(r_jb, text="가입버튼 좌표", width=16, anchor=tk.W,
                      font=F_LABEL, bg=PALETTE["card"],
                      fg=PALETTE["accent"]).pack(side=tk.LEFT)
             for lbl_t, var in [("X:", self._tg_jb_x), ("Y:", self._tg_jb_y)]:
@@ -5118,7 +5223,7 @@ class TemplateTab(tk.Frame):
             _toggle_jb_coord()  # 초기 상태 반영
 
     # ── 좌표 캡처 — 포인트 ──────────────────────────────────
-    def _capture_point(self, key, xv, yv, disp_lbl):
+    def _capture_point(self, key, xv, yv, disp_lbl, disp_wrap=None):
         """3초 카운트다운 후 마우스 좌표 캡처 (오버레이 없음)"""
         if not HAS_PYAUTOGUI:
             messagebox.showwarning("패키지 없음",
@@ -5133,7 +5238,12 @@ class TemplateTab(tk.Frame):
                 x, y = pyautogui.position()
                 xv.set(str(x)); yv.set(str(y))
                 if disp_lbl:
-                    disp_lbl.config(text=f"({x}, {y})")
+                    # 캡처 성공: 연초록 배경 + 굵은 좌표 표시
+                    self.after(0, lambda: disp_lbl.config(
+                        text=f"✓ ({x}, {y})",
+                        bg="#ECFDF5", fg="#065F46"))
+                    if disp_wrap:
+                        self.after(0, lambda: disp_wrap.config(bg="#ECFDF5"))
                 self.app._set_status(f"✅ [{key}] 캡처: ({x}, {y})")
             except Exception as ex:
                 messagebox.showerror("캡처 실패", str(ex))
@@ -5574,6 +5684,22 @@ class TemplateTab(tk.Frame):
             value=t.get("workflow", "kakao_friend"))
         self._refresh_edit_panel()
 
+    def _on_dbl_click(self, _event=None):
+        """더블클릭 시 템플릿 이름 입력 필드로 포커스 이동 (편집 유도)"""
+        # 먼저 선택 처리
+        self._on_select()
+        # 이름 Entry 위젯이 있으면 포커스 이동 + 짧게 강조 효과
+        try:
+            if hasattr(self, "_name_entry") and self._name_entry.winfo_exists():
+                self._name_entry.focus_set()
+                self._name_entry.select_range(0, tk.END)
+                # 노란 배경으로 0.5초 강조
+                orig_bg = self._name_entry.cget("bg")
+                self._name_entry.config(bg="#FEF9C3")
+                self.after(500, lambda: self._name_entry.config(bg=orig_bg))
+        except Exception:
+            pass
+
     # ── 새 템플릿 ────────────────────────────────────────────
     def _add_template(self):
         self._sel_idx = -1
@@ -5793,6 +5919,12 @@ class JobsTab(tk.Frame):
             b.bind("<Enter>", lambda e, b=b, c=c: b.config(bg=_lighten(c)))
             b.bind("<Leave>", lambda e, b=b, c=c: b.config(bg=c))
 
+        # 툴팁 등록
+        add_tip(b_run_sel, "선택한 작업 1개를 즉시 실행합니다")
+        add_tip(b_run_all, "활성화된 모든 작업을 순차적으로 실행합니다")
+        add_tip(b_stop,    "현재 실행 중인 작업을 중지합니다 (선택 없으면 전체 중지)")
+        add_tip(b_toggle,  "선택한 작업의 활성/비활성 상태를 전환합니다")
+
         # ── 인라인 팁 카드 ─────────────────────────────────
         tip_frame = tk.Frame(self,
                              bg="#EFF6FF",
@@ -5825,18 +5957,19 @@ class JobsTab(tk.Frame):
             show="headings", height=14)
 
         headers = [
-            ("name",     "작업명",   160),
-            ("template", "템플릿명", 160),
-            ("platform", "플랫폼",    80),
-            ("workflow", "작업유형", 150),
-            ("schedule", "스케줄",   130),
-            ("status",   "상태",      90),
-            ("active",   "활성",      60),   # v1.55 신규
+            # (col, 헤더명, 기본너비, 정렬, stretch)
+            ("name",     "작업명",   160, tk.W,      True),
+            ("template", "템플릿명", 150, tk.W,      True),
+            ("platform", "플랫폼",    80, tk.CENTER, False),
+            ("workflow", "작업유형", 130, tk.CENTER, False),
+            ("schedule", "스케줄",   130, tk.CENTER, False),
+            ("status",   "상태",      90, tk.CENTER, False),
+            ("active",   "활성",      52, tk.CENTER, False),
         ]
-        for col, hd, w in headers:
-            self._tv.heading(col, text=hd)
+        for col, hd, w, anch, strch in headers:
+            self._tv.heading(col, text=hd, anchor=anch)
             self._tv.column(col, width=w,
-                            anchor=tk.CENTER, stretch=False)
+                            anchor=anch, stretch=strch, minwidth=w//2)
 
         # Treeview 스타일
         style = ttk.Style()
@@ -5901,15 +6034,22 @@ class JobsTab(tk.Frame):
         prog_frame = tk.Frame(prog_outer, bg=PALETTE["card"])
         prog_frame.pack(fill=tk.X, padx=12, pady=8)
 
-        self._prog_var   = tk.DoubleVar(value=0)
-        self._prog_label = tk.StringVar(value="⏳ 대기 중")
+        self._prog_var    = tk.DoubleVar(value=0)
+        self._prog_label  = tk.StringVar(value="⏳ 대기 중")
+        self._prog_target = tk.StringVar(value="")   # 현재 처리 대상
 
-        # 상태 레이블
+        # 상태 레이블 (작업상태)
         tk.Label(prog_frame, textvariable=self._prog_label,
                  font=(_FF, 9, "bold"),
                  bg=PALETTE["card"], fg=PALETTE["text2"],
-                 width=14, anchor=tk.W,
-                 ).pack(side=tk.LEFT, padx=(0, 10))
+                 width=10, anchor=tk.W,
+                 ).pack(side=tk.LEFT, padx=(0, 6))
+        # 현재 처리 대상 (계정 → 링크 / 번호)
+        tk.Label(prog_frame, textvariable=self._prog_target,
+                 font=(_FFM, 8),
+                 bg=PALETTE["card"], fg=PALETTE["muted"],
+                 anchor=tk.W,
+                 ).pack(side=tk.LEFT, padx=(0, 8))
 
         # 프로그레스 바
         style2 = ttk.Style()
@@ -6249,9 +6389,28 @@ class JobsTab(tk.Frame):
     def _run_selected(self): pass
     def _run_all(self):      pass
     def _stop_all(self):     pass
-    def set_progress(self, val, label=""):
+    def set_progress(self, val, label="", target=""):
+        """진행률 + 상태 레이블 + 현재 처리 대상 업데이트"""
         self._prog_var.set(val)
-        if label: self._prog_label.set(label)
+        if label:
+            self._prog_label.set(label)
+        if target is not None:
+            self._prog_target.set(target)
+    def set_target(self, acct: str = "", peer: str = "",
+                   cur: int = 0, total: int = 0):
+        """현재 처리 대상 표시 갱신 (계정명, 링크/전화번호, N/전체)"""
+        if not acct and not peer:
+            self._prog_target.set("")
+            return
+        parts = []
+        if acct:
+            parts.append(f"[{acct}]")
+        if peer:
+            short = peer if len(peer) <= 20 else peer[:18] + "…"
+            parts.append(f"→ {short}")
+        if total > 0:
+            parts.append(f"({cur}/{total})")
+        self._prog_target.set("  ".join(parts))
     def set_counts(self, succ: int, fail: int):
         self._succ_var.set(f"✅ {succ}")
         self._fail_var.set(f"❌ {fail}")
@@ -6325,7 +6484,7 @@ class JobDialog(tk.Toplevel):
                      ).pack(fill=tk.X)
             inner_r = tk.Frame(r, bg=PALETTE["card"])
             inner_r.pack(fill=tk.X, padx=14, pady=8)
-            tk.Label(inner_r, text=label, width=14, anchor=tk.W,
+            tk.Label(inner_r, text=label, width=16, anchor=tk.W,
                      font=F_LABEL,
                      bg=PALETTE["card"],
                      fg=PALETTE["text2"]
@@ -6531,7 +6690,7 @@ class JobDialog(tk.Toplevel):
         msg_frame = tk.Frame(s, bg=PALETTE["bg"])
         msg_frame.pack(fill=tk.X, padx=12, pady=6)
         tk.Label(msg_frame, text="메시지 내용",
-                 width=14, anchor=tk.W,
+                 width=16, anchor=tk.W,
                  font=F_LABEL,
                  bg=PALETTE["bg"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT, anchor=tk.N, pady=2)
@@ -8364,13 +8523,15 @@ class WorkflowExecutor:
         if mode == "zigzag":
             for idx, row in enumerate(rows):
                 if self._is_stopped(): break
-                self._progress(idx+1, total)
                 peer = str(row.get("텔레그램링크",
                            row.get("link",
                            row.get("username", "")))).strip()
                 if not peer:
                     self._fail += 1; continue
                 acct = active_accounts[idx % n_accts]
+                self._progress(idx+1, total,
+                               acct=acct.get("name", ""),
+                               peer=peer)
                 msg  = self._apply_vars(message, row)
                 _do_send_one(acct, peer, msg, idx, total)
                 # [CRIT-04 fix] 계정 경계에서 sw_dly 또는 tg_min~max 중 하나만
@@ -8396,7 +8557,9 @@ class WorkflowExecutor:
                     if not peer:
                         self._fail += 1; continue
                     abs_idx = i*chunk + idx
-                    self._progress(abs_idx+1, total)
+                    self._progress(abs_idx+1, total,
+                                   acct=acct.get("name", ""),
+                                   peer=peer)
                     msg = self._apply_vars(message, row)
                     _do_send_one(acct, peer, msg, abs_idx, total)
                     if self._sleep_or_stop(
@@ -8415,7 +8578,9 @@ class WorkflowExecutor:
                                row.get("username", "")))).strip()
                     if not peer:
                         self._fail += 1; continue
-                    self._progress(idx+1, total)
+                    self._progress(idx+1, total,
+                                   acct=acct.get("name", ""),
+                                   peer=peer)
                     msg = self._apply_vars(message, row)
                     _do_send_one(acct, peer, msg, idx, total)
                     if self._sleep_or_stop(
@@ -8961,11 +9126,13 @@ def _jobs_run_job(self, job: dict, silent: bool = False):
         self.after(0, lambda:
             self.app._set_status(msg[:60]))
 
-    def _progress(cur, total):
-        pct = (cur / total * 100) if total > 0 else 0
-        label = f"{name}  {cur}/{total}"
-        self.after(0, lambda:
-            self.set_progress(pct, label))
+    def _progress(cur, total, acct="", peer=""):
+        """진행률 + 현재 처리 대상 UI 업데이트"""
+        pct   = (cur / total * 100) if total > 0 else 0
+        label = f"▶ {name}"
+        self.after(0, lambda p=pct, lb=label: self.set_progress(p, lb))
+        self.after(0, lambda a=acct, pe=peer, c=cur, t=total:
+                   self.set_target(a, pe, c, t))
 
     def _done(succ, fail):
         self.after(0, lambda:
@@ -10466,9 +10633,7 @@ class TelegramAccountsTab(tk.Frame):
         cfg["tg_api"]["api_hash"] = api_hash
         save_json(CONFIG_PATH, cfg)
         self.app.config_data = cfg
-        messagebox.showinfo("저장 완료",
-                            "✅ API 인증 정보가 저장되었습니다.\n"
-                            "이제 계정을 추가하고 연결 테스트를 진행하세요.")
+        self.app._set_status("✅ API 인증 정보 저장 완료 — 계정을 추가하고 연결 테스트를 진행하세요.")
 
     def _sec_label(self, parent, text: str):
         """섹션 구분 레이블 (개선판)"""
@@ -10611,7 +10776,7 @@ class TelegramAccountsTab(tk.Frame):
 
         self._save_accounts_file()
         self._refresh_tv()
-        messagebox.showinfo("저장 완료", f"계정 '{data['name']}' 저장 완료.")
+        self.app._set_status(f"✅ 계정 '{data['name']}' 저장 완료.")
 
     def _test_connect(self):
         """연결 테스트 — OTP / 2FA 인증 다이얼로그 포함"""
@@ -10800,7 +10965,7 @@ class TelegramAccountsTab(tk.Frame):
         """일일 발송 카운터 초기화"""
         _get_tg_engine().reset_daily_counts()
         self._refresh_tv()
-        messagebox.showinfo("초기화 완료", "일일 발송 카운터가 초기화되었습니다.")
+        self.app._set_status("✅ 일일 발송 카운터가 초기화되었습니다.")
 
     # ── 상태 폴링 (5초마다 Treeview 갱신) ─────────────────
     def _start_status_poll(self):
@@ -10851,6 +11016,7 @@ class LogTab(tk.Frame):
         super().__init__(master, bg=PALETTE["bg"])
         self.app     = app
         self._logs:  list[dict] = []   # 전체 로그 버퍼
+        self._auto_scroll = tk.BooleanVar(value=True)  # 자동 스크롤 옵션
         self._build()
 
     def _build(self):
@@ -10960,6 +11126,18 @@ class LogTab(tk.Frame):
                  font=F_SMALL, width=20
                  ).pack(side=tk.LEFT, ipady=2)
 
+        # 구분선 + 자동 스크롤 체크박스
+        tk.Frame(flt, bg=PALETTE["border2"], width=1, height=20
+                 ).pack(side=tk.LEFT, padx=(10, 8), fill=tk.Y)
+        tk.Checkbutton(flt, text="📌 자동 스크롤",
+                       variable=self._auto_scroll,
+                       bg=PALETTE["card"], fg=PALETTE["text2"],
+                       selectcolor=PALETTE["active"],
+                       activebackground=PALETTE["card"],
+                       font=(_FF, 8),
+                       cursor="hand2"
+                       ).pack(side=tk.LEFT)
+
         # ── 로그 Treeview ────────────────────────────────────
         tv_frame = tk.Frame(self,
                             bg=PALETTE["card"],
@@ -11052,10 +11230,11 @@ class LogTab(tk.Frame):
         # 필터 통과 시만 Treeview 에 추가
         if self._match_filter(entry):
             self._insert_row(entry)
-            # 자동 스크롤
-            children = self._tv.get_children()
-            if children:
-                self._tv.see(children[-1])
+            # 자동 스크롤 (체크박스 ON 시에만)
+            if self._auto_scroll.get():
+                children = self._tv.get_children()
+                if children:
+                    self._tv.see(children[-1])
 
         self._update_summary()
 
@@ -11202,17 +11381,20 @@ class StatsTab(tk.Frame):
         tk.Frame(self, bg=PALETTE["border"], height=1
                  ).pack(fill=tk.X, pady=(0, 10))
 
-        # ── 요약 뱃지 행 ──────────────────────────────────────
+        # ── 요약 뱃지 — 2×2 그리드 (창 축소 시 넘침 방지) ────
         self._badge_frame = tk.Frame(self, bg=PALETTE["bg"])
         self._badge_frame.pack(fill=tk.X, pady=(0, 10))
+        # columnconfigure로 4칸 균등 분배
+        for c in range(4):
+            self._badge_frame.columnconfigure(c, weight=1)
         self._total_lbl  = self._badge("전체 실행", "0",
-                                        PALETTE["primary"])
+                                        PALETTE["primary"],  row=0, col=0)
         self._succ_lbl   = self._badge("성공",      "0",
-                                        PALETTE["success"])
+                                        PALETTE["success"],  row=0, col=1)
         self._fail_lbl   = self._badge("실패",      "0",
-                                        PALETTE["danger"])
+                                        PALETTE["danger"],   row=0, col=2)
         self._rate_lbl   = self._badge("성공률",    "0%",
-                                        PALETTE["warning"])
+                                        PALETTE["warning"],  row=0, col=3)
 
         # ── Treeview ─────────────────────────────────────────
         tv_frame = tk.Frame(self,
@@ -11255,12 +11437,12 @@ class StatsTab(tk.Frame):
                       fill=tk.BOTH, expand=True)
 
     def _badge(self, label: str, value: str,
-               color: str) -> tk.Label:
-        # 외곽 프레임 (그림자 효과)
+               color: str, row: int = 0, col: int = 0) -> tk.Label:
+        # 외곽 프레임 (그림자 효과) — grid 배치
         outer = tk.Frame(self._badge_frame,
                          bg=PALETTE["border"],
                          padx=1, pady=1)
-        outer.pack(side=tk.LEFT, padx=(0, 10), pady=4)
+        outer.grid(row=row, column=col, padx=(0, 8), pady=4, sticky="ew")
         f = tk.Frame(outer, bg=PALETTE["card"])
         f.pack(fill=tk.BOTH)
         # 상단 컬러 바
@@ -11403,6 +11585,21 @@ class SettingsTab(tk.Frame):
         tk.Label(title_f, text="  설정",
                  font=F_TITLE, bg=PALETTE["bg"], fg=PALETTE["text"]
                  ).pack(side=tk.LEFT)
+
+        # 헤더 우측 고정 저장 버튼 (sticky header)
+        self._hdr_save_btn = tk.Button(
+            hdr, text="💾  저장",
+            command=self._save,
+            bg=PALETTE["primary"], fg="#FFFFFF",
+            relief=tk.FLAT,
+            font=F_BTN_S,
+            activebackground=PALETTE["primary2"],
+            cursor="hand2", padx=14, pady=5)
+        self._hdr_save_btn.pack(side=tk.RIGHT)
+        self._hdr_save_btn.bind("<Enter>",
+            lambda e: self._hdr_save_btn.config(bg=PALETTE["primary2"]))
+        self._hdr_save_btn.bind("<Leave>",
+            lambda e: self._hdr_save_btn.config(bg=PALETTE["primary"]))
 
         # 구분선
         tk.Frame(self, bg=PALETTE["border"], height=1
@@ -11747,9 +11944,7 @@ class SettingsTab(tk.Frame):
                 cfg["mouse"]["click_delay"]
 
         save_json(CONFIG_PATH, cfg)
-        self.app._set_status("✅ 설정 저장 완료")
-        messagebox.showinfo("저장 완료",
-            "설정이 저장되었습니다.")
+        self.app._set_status("✅ 설정이 저장되었습니다.")
 
 
 def _app_build_settings_tab(self, frame):
