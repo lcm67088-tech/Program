@@ -7268,14 +7268,16 @@ class WorkflowExecutor:
     # ── 스크린샷 캡처 ────────────────────────────────────────
     def _tg_capture_chat(self, eng, acct: dict, peer: str,
                           capture_delay: float = 2.0,
-                          n_msgs: int = 5) -> str:
+                          n_msgs: int = 5,
+                          sent_msg_id: int = None) -> str:
         """Telethon API로 채팅방 최신 메시지를 가져와 텍스트 파일로 저장.
 
-        · peer       : 채널/그룹 username 또는 링크
+        · peer          : 채널/그룹 username 또는 링크
         · capture_delay : 발송 후 대기 시간(초) — 메시지 반영 대기
-        · n_msgs     : 가져올 최근 메시지 수
-        · 저장 위치  : screenshots/chatlog_{작업명}_{peer}_{시각}.txt
-        · 반환값     : 저장 파일 경로 (실패 시 '')
+        · n_msgs        : 가져올 최근 메시지 수
+        · sent_msg_id   : 직전에 보낸 메시지 ID (있으면 ID 기반으로 정확 조회)
+        · 저장 위치     : screenshots/chatlog_{작업명}_{peer}_{시각}.txt
+        · 반환값        : 저장 파일 경로 (실패 시 '')
         """
         if not HAS_TELETHON:
             return ""
@@ -7314,9 +7316,28 @@ class WorkflowExecutor:
                     f"=== 캡처 시각: {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
                 captured_lines.append("")
 
-                # 최근 메시지 가져오기
-                msgs = await client.get_messages(peer, limit=n_msgs)
-                for m in reversed(msgs):
+                # ── 메시지 조회: sent_msg_id 있으면 ID 기반(정확), 없으면 최근 N개 ──
+                if sent_msg_id:
+                    # 내가 보낸 메시지 ID 를 중심으로 ±(n_msgs//2) 범위 조회
+                    # get_messages(ids=[...]) → 정확히 해당 메시지만
+                    # min_id/max_id 를 활용해 전후 맥락 포함
+                    half = max(1, n_msgs // 2)
+                    msgs = await client.get_messages(
+                        peer,
+                        min_id=sent_msg_id - 1,
+                        max_id=sent_msg_id + half + 1,
+                        limit=n_msgs
+                    )
+                    # 내 메시지가 빠진 경우 직접 추가
+                    ids_got = {m.id for m in msgs}
+                    if sent_msg_id not in ids_got:
+                        exact = await client.get_messages(peer, ids=[sent_msg_id])
+                        msgs = list(msgs) + [m for m in exact if m is not None]
+                    msgs = sorted(msgs, key=lambda m: m.id)
+                else:
+                    msgs = await client.get_messages(peer, limit=n_msgs)
+
+                for m in reversed(msgs) if not sent_msg_id else msgs:
                     sender_name = ""
                     sender_id   = None
                     try:
@@ -7336,12 +7357,20 @@ class WorkflowExecutor:
                     captured_lines.append(
                         f"[{ts_str}] {sender_name}: {text}{media_note}")
                     # PNG 렌더링용 raw 데이터
+                    # out=True: 내가 보낸 메시지 (말풍선 오른쪽/파란색)
+                    # · sent_msg_id 와 ID 일치 → 확실히 내 것
+                    # · Telethon m.out 플래그도 함께 참조
+                    is_out = bool(getattr(m, "out", False))
+                    if sent_msg_id and m.id == sent_msg_id:
+                        is_out = True
                     msgs_raw.append({
-                        "sender": sender_name,
+                        "sender":    sender_name,
                         "sender_id": sender_id,
-                        "time": ts_str,
-                        "text": text or media_note,
-                        "is_media": bool(m.media and not m.text),
+                        "time":      ts_str,
+                        "text":      text or media_note,
+                        "is_media":  bool(m.media and not m.text),
+                        "out":       is_out,    # ★ 내 메시지 여부
+                        "msg_id":    m.id,      # ★ 메시지 ID
                     })
 
             eng._run_in_loop(loop, _fetch())
@@ -7466,17 +7495,11 @@ class WorkflowExecutor:
 
             bubble_infos = []   # (is_mine, name, lines, time_str, bh)
             for msg in msgs:
-                # 내 메시지 여부: sender_id 가 내 계정 user_id 와 일치하면 오른쪽
-                # 여기서는 보내는 계정(phone) 으로 보낸 마지막 메시지를 "내 것"으로 판별
-                # Telethon: out=True 필드가 있으면 가장 정확하지만
-                # msgs_raw 에는 out 정보가 없으므로 sender 이름으로 추정
-                # → 실제로는 발송 계정 이름을 "나"로 취급
-                is_mine = (msg.get("sender_id") is not None and
-                           msg.get("sender", "") not in ("", "unknown"))
-                # 더 단순하게: 마지막 메시지(가장 최근 = 내가 보낸 것)를 파란색으로
-                # → sender 이름이 비어있지 않으면 파란색 (발송 계정)
-                # 실제 구현: msgs_raw 에 out=True 를 추가하는 게 가장 정확하나
-                # 현재 구조에서는 index 기반으로 처리 (마지막 = 내 메시지)
+                # ── 내 메시지 판별 (우선순위 순) ────────────────────────────
+                # 1순위: msgs_raw 에 "out" 필드가 True → Telethon 확인된 내 메시지
+                # 2순위: "msg_id" 가 sent_msg_id 와 일치
+                # 이 두 가지로 100% 정확하게 판별
+                is_mine = bool(msg.get("out", False))
                 name    = msg.get("sender", "")
                 text    = msg.get("text", "")
                 ts_str  = msg.get("time", "")
@@ -7510,11 +7533,10 @@ class WorkflowExecutor:
 
             y = HEADER_H + PAD
 
-            # 재계산: out 판별을 인덱스 기준(마지막 = 내 것)으로 처리
-            last_idx = len(msgs) - 1
+            # ── 렌더링 루프: out 필드 기반으로 정확히 판별 ───────────────
             for idx, (msg, (_, name, lines, ts_str, bh)) in \
                     enumerate(zip(msgs, bubble_infos)):
-                is_mine = (idx == last_idx)  # 마지막 메시지 = 내가 보낸 것
+                is_mine = bool(msg.get("out", False))  # ★ Telethon 확인된 내 메시지
 
                 bub_color  = MY_BUBBLE  if is_mine else OTHER_BUB
                 text_color = MY_TEXT    if is_mine else OTHER_TEXT
@@ -8743,8 +8765,10 @@ class WorkflowExecutor:
             # 발송 전 딜레이
             if api_before_send > 0:
                 time.sleep(api_before_send)
-            ok = eng.send_message(acct, peer, msg, self._stop,
-                                  img_path=img_path)
+            result  = eng.send_message(acct, peer, msg, self._stop,
+                                       img_path=img_path)
+            ok      = result.get("ok", False)
+            msg_id  = result.get("msg_id")          # ★ 메시지 ID
             if ok:
                 self._succ += 1
                 self._record(peer, "성공")
@@ -8752,15 +8776,19 @@ class WorkflowExecutor:
                 self._fail += 1
                 self._record(peer, "실패")
             if self._report_rows:
-                self._report_rows[-1]["계정"] = acct.get("name", "")
+                self._report_rows[-1]["계정"]  = acct.get("name", "")
+                if msg_id:
+                    # 리포트 비고에 메시지 ID 기록
+                    self._report_rows[-1]["비고"] += f" [msg_id={msg_id}]"
             # 발송 후 딜레이
             if api_after_send > 0:
                 time.sleep(api_after_send)
-            # 발송 후 채팅 캡처 (성공 시만)
+            # 발송 후 채팅 캡처 (성공 시만) — sent_msg_id 전달로 정확한 캡처
             if ok and api_capture_on:
                 self._tg_capture_chat(eng, acct, peer,
                                       capture_delay=api_capture_dly,
-                                      n_msgs=api_capture_n)
+                                      n_msgs=api_capture_n,
+                                      sent_msg_id=msg_id)
             return ok
 
         if mode == "zigzag":
@@ -10203,6 +10231,137 @@ class TelethonEngine:
         self._threads[phone] = t
 
     # ── 공개 API ───────────────────────────────────────────
+    # ── ② 계정 상태 실시간 조회 (get_me) ───────────────────────────────
+    def _check_account_status(self, acct: dict) -> dict:
+        """발송 전 계정 제재/밴 여부를 Telethon get_me() 로 확인.
+
+        반환: {
+            "ok":         bool,      # True = 정상
+            "restricted": bool,      # True = 제한 계정
+            "banned":     bool,      # True = 정지 계정
+            "scam":       bool,      # True = 스캠 마킹
+            "id":         int|None,
+            "username":   str,
+            "name":       str,
+            "reason":     str,       # 제재 이유 문자열 (없으면 "")
+        }
+        연결 실패 / Telethon 미설치 시 {"ok": False, ...} 반환.
+        """
+        empty = {"ok": False, "restricted": False, "banned": False,
+                 "scam": False, "id": None, "username": "", "name": "", "reason": ""}
+        if not HAS_TELETHON:
+            return empty
+        phone = self._normalize_phone(acct.get("phone", ""))
+        try:
+            client, loop = self._ensure_client(acct)
+            self._start_loop_thread(phone, loop)
+
+            async def _get():
+                if not client.is_connected():
+                    await client.connect()
+                if not await client.is_user_authorized():
+                    return None
+                return await client.get_me()
+
+            me = self._run_in_loop(loop, _get())
+            if me is None:
+                return {**empty, "reason": "미인증"}
+
+            restricted = bool(getattr(me, "restricted", False))
+            banned     = bool(getattr(me, "deleted", False))  # UserDeactivated
+            scam       = bool(getattr(me, "scam",   False))
+            fake       = bool(getattr(me, "fake",   False))
+            name       = ((getattr(me, "first_name", "") or "") + " " +
+                          (getattr(me, "last_name",  "") or "")).strip()
+            username   = getattr(me, "username", "") or ""
+            user_id    = getattr(me, "id", None)
+
+            reasons = []
+            if restricted: reasons.append("restricted")
+            if banned:     reasons.append("banned/deactivated")
+            if scam:       reasons.append("scam")
+            if fake:       reasons.append("fake")
+
+            info = {
+                "ok":         not (restricted or banned or scam or fake),
+                "restricted": restricted,
+                "banned":     banned or scam or fake,
+                "scam":       scam,
+                "id":         user_id,
+                "username":   username,
+                "name":       name,
+                "reason":     ", ".join(reasons),
+            }
+            if reasons:
+                self._log_fn(
+                    f"[TG:{phone}] ⚠️ 계정 상태 이상: {', '.join(reasons)}", "WARN")
+            else:
+                self._log_fn(
+                    f"[TG:{phone}] 👤 계정 정상 — {name} (@{username}) id={user_id}", "INFO")
+            return info
+
+        except Exception as _e:
+            self._log_fn(f"[TG:{phone}] ⚠️ 계정 상태 조회 실패: {_e}", "WARN")
+            return empty
+
+    # ── ③ 채팅방 권한 체크 (get_permissions) ──────────────────────────
+    def check_peer_permission(self, acct: dict, peer: str) -> dict:
+        """발송 전 해당 채팅방에서 내 계정의 전송 권한 확인.
+
+        반환: {
+            "ok":           bool,   # True = 발송 가능
+            "is_member":    bool,
+            "send_messages":bool,
+            "is_banned":    bool,
+            "reason":       str,
+        }
+        """
+        empty = {"ok": False, "is_member": False, "send_messages": False,
+                 "is_banned": False, "reason": ""}
+        if not HAS_TELETHON:
+            return empty
+        phone = self._normalize_phone(acct.get("phone", ""))
+        try:
+            client, loop = self._ensure_client(acct)
+            self._start_loop_thread(phone, loop)
+
+            async def _check():
+                if not client.is_connected():
+                    await client.connect()
+                me     = await client.get_me()
+                perms  = await client.get_permissions(peer, me)
+                return perms
+
+            perms = self._run_in_loop(loop, _check())
+            if perms is None:
+                return {**empty, "reason": "권한 조회 실패"}
+
+            is_banned       = bool(getattr(perms, "is_banned",      False))
+            is_member       = bool(getattr(perms, "is_member",      True))
+            send_messages   = bool(getattr(perms, "send_messages",  True))
+
+            reasons = []
+            if is_banned:     reasons.append("밴")
+            if not is_member: reasons.append("비멤버")
+            if not send_messages: reasons.append("전송권한없음")
+
+            result = {
+                "ok":           not is_banned and is_member and send_messages,
+                "is_member":    is_member,
+                "send_messages":send_messages,
+                "is_banned":    is_banned,
+                "reason":       ", ".join(reasons),
+            }
+            if reasons:
+                self._log_fn(
+                    f"[TG:{phone}] ⛔ 채팅방 권한 부족 [{peer}]: {', '.join(reasons)}", "WARN")
+            return result
+
+        except Exception:
+            # get_permissions 미지원 채팅방(채널 등)은 정상 처리
+            return {"ok": True, "is_member": True, "send_messages": True,
+                    "is_banned": False, "reason": ""}
+
     def connect(self, acct: dict,
                 otp_callback=None, password_callback=None) -> bool:
         """계정 연결.
@@ -10317,15 +10476,43 @@ class TelethonEngine:
 
     def send_message(self, acct: dict, peer: str, message: str,
                      stop_event: threading.Event = None,
-                     img_path: str = "") -> bool:
+                     img_path: str = "") -> dict:
         """메시지 전송  [TG-1]
         img_path: 이미지 파일 경로 (비어 있으면 텍스트만 전송)
                   Telethon API 모드에서는 좌표 없이 직접 파일 전송 가능
+
+        반환값: {"ok": bool, "msg_id": int|None}
+          · ok=True, msg_id=정수  → 전송 성공 (서버 확인된 메시지 ID)
+          · ok=False, msg_id=None → 전송 실패
         """
+        _FAIL = {"ok": False, "msg_id": None}
         if not HAS_TELETHON:
-            self._log_fn("telethon 미설치", "ERROR"); return False
+            self._log_fn("telethon 미설치", "ERROR"); return _FAIL
 
         phone = self._normalize_phone(acct.get("phone", ""))  # 국제 형식 변환
+
+        # ── ① 발송 전 계정 상태 체크 (get_me) ─────────────────
+        try:
+            _me_info = self._check_account_status(acct)
+            if _me_info.get("restricted") or _me_info.get("banned"):
+                self._log_fn(
+                    f"[TG:{phone}] ⛔ 계정 제재/밴 감지 — 발송 건너뜀 "
+                    f"({_me_info.get('reason','unknown')})", "ERROR")
+                self._status[phone] = self.ST_BANNED
+                return _FAIL
+        except Exception:
+            pass  # 상태 체크 실패 시 계속 진행
+
+        # ── ③ 발송 전 채팅방 권한 체크 (get_permissions) ─────
+        try:
+            _perm = self.check_peer_permission(acct, peer)
+            if not _perm.get("ok", True):
+                self._log_fn(
+                    f"[TG:{phone}] ⛔ 채팅방 권한 없음 [{peer}] — 건너뜀 "
+                    f"({_perm.get('reason','')})", "ERROR")
+                return _FAIL
+        except Exception:
+            pass  # 권한 체크 실패 시 계속 진행
 
         daily_limit = int(acct.get("daily_limit", 500))
         warmup      = acct.get("warmup", False)
@@ -10336,7 +10523,7 @@ class TelethonEngine:
 
         if self._daily_cnt.get(phone, 0) >= daily_limit:
             self._log_fn(f"[TG:{phone}] ⚠️ 일일 한도 초과 ({daily_limit}건)", "WARN")
-            return False
+            return _FAIL
 
         # 이미지 파일 유효성 확인
         _img = img_path.strip() if img_path else ""
@@ -10349,23 +10536,33 @@ class TelethonEngine:
             self._start_loop_thread(phone, loop)
             self._status[phone] = self.ST_RUNNING
 
+            sent_holder = {}   # 코루틴 → 외부로 sent 객체 전달
+
             async def _do_send():
                 if not client.is_connected():
                     await client.connect()
                 if _img:
                     # 이미지 + 메시지 동시 전송 (Telethon send_file)
-                    await client.send_file(peer, _img,
-                                           caption=message if message else None)
+                    sent = await client.send_file(peer, _img,
+                                                  caption=message if message else None)
                     self._log_fn(f"[TG:{phone}] 📎 이미지 첨부 전송 → {peer}")
                 else:
-                    await client.send_message(peer, message)
+                    sent = await client.send_message(peer, message)
+                sent_holder["sent"] = sent  # 반환값 보존
 
             self._retry_run(phone, loop, _do_send, peer, stop_event)
+
+            # ── ② 메시지 ID 추출 ──────────────────────────────
+            sent_obj = sent_holder.get("sent")
+            msg_id   = getattr(sent_obj, "id", None)
+
             with self._lock:
                 self._daily_cnt[phone] = self._daily_cnt.get(phone, 0) + 1
             self._status[phone] = self.ST_IDLE
-            self._log_fn(f"[TG:{phone}] ✅ 발송 완료 → {peer}", "SUCCESS")
-            return True
+            self._log_fn(
+                f"[TG:{phone}] ✅ 발송 완료 → {peer}"
+                + (f"  (msg_id={msg_id})" if msg_id else ""), "SUCCESS")
+            return {"ok": True, "msg_id": msg_id}
 
         except Exception as e:
             return self._handle_error(phone, e, peer)
@@ -10395,11 +10592,14 @@ class TelethonEngine:
                     raise
             # 기타 예외는 상위로 전파
 
-    def _handle_error(self, phone: str, exc, target: str) -> bool:
-        """제재 탐지 및 상태 업데이트  [TG-2]"""
+    def _handle_error(self, phone: str, exc, target: str) -> dict:
+        """제재 탐지 및 상태 업데이트  [TG-2]
+        반환값: {"ok": False, "msg_id": None}
+        """
+        _FAIL = {"ok": False, "msg_id": None}
         if not HAS_TELETHON:
             self._status[phone] = self.ST_ERROR
-            return False
+            return _FAIL
 
         err_name = type(exc).__name__
         if isinstance(exc, _tl_errors.PeerFloodError):
@@ -10421,7 +10621,116 @@ class TelethonEngine:
         else:
             self._status[phone] = self.ST_ERROR
             self._log_fn(f"[TG:{phone}] ❌ 오류: {exc}", "ERROR")
-        return False
+        return _FAIL
+
+    # ── ④ 가입된 채팅방 목록 조회 (iter_dialogs) ──────────────────────
+    def get_dialogs(self, acct: dict, limit: int = 100) -> list[dict]:
+        """계정이 가입된 채팅방/그룹/채널 목록 반환.
+
+        반환: [{"name", "id", "username", "type", "unread"}, ...]
+          type: "user" | "group" | "channel" | "supergroup"
+        """
+        if not HAS_TELETHON:
+            return []
+        phone = self._normalize_phone(acct.get("phone", ""))
+        try:
+            client, loop = self._ensure_client(acct)
+            self._start_loop_thread(phone, loop)
+
+            result: list[dict] = []
+
+            async def _fetch():
+                if not client.is_connected():
+                    await client.connect()
+                async for dialog in client.iter_dialogs(limit=limit):
+                    ent  = dialog.entity
+                    name = getattr(ent, "title", None) or \
+                           ((getattr(ent, "first_name", "") or "") + " " +
+                            (getattr(ent, "last_name",  "") or "")).strip()
+                    uname  = getattr(ent, "username", "") or ""
+                    eid    = getattr(ent, "id", None)
+                    unread = dialog.unread_count
+
+                    from telethon.tl.types import (
+                        User, Chat, Channel
+                    )
+                    if isinstance(ent, User):
+                        dtype = "user"
+                    elif isinstance(ent, Channel):
+                        dtype = "supergroup" if getattr(ent, "megagroup", False) else "channel"
+                    else:
+                        dtype = "group"
+
+                    result.append({
+                        "name":    name,
+                        "id":      eid,
+                        "username":uname,
+                        "type":    dtype,
+                        "unread":  unread,
+                    })
+
+            self._run_in_loop(loop, _fetch())
+            self._log_fn(
+                f"[TG:{phone}] 📋 대화방 목록 {len(result)}개 조회 완료", "INFO")
+            return result
+
+        except Exception as _e:
+            self._log_fn(f"[TG:{phone}] ⚠️ 대화방 목록 조회 실패: {_e}", "WARN")
+            return []
+
+    # ── ⑤ 메시지 수정 / 삭제 ────────────────────────────────────────
+    def edit_message(self, acct: dict, peer: str,
+                     msg_id: int, new_text: str) -> bool:
+        """발송된 메시지 내용 수정.
+        msg_id: send_message() 반환 dict 의 "msg_id" 값
+        반환: True = 성공, False = 실패
+        """
+        if not HAS_TELETHON or not msg_id:
+            return False
+        phone = self._normalize_phone(acct.get("phone", ""))
+        try:
+            client, loop = self._ensure_client(acct)
+            self._start_loop_thread(phone, loop)
+
+            async def _edit():
+                if not client.is_connected():
+                    await client.connect()
+                await client.edit_message(peer, msg_id, new_text)
+
+            self._run_in_loop(loop, _edit())
+            self._log_fn(
+                f"[TG:{phone}] ✏️ 메시지 수정 완료 (id={msg_id}) → {peer}", "SUCCESS")
+            return True
+        except Exception as _e:
+            self._log_fn(f"[TG:{phone}] ⚠️ 메시지 수정 실패: {_e}", "WARN")
+            return False
+
+    def delete_message(self, acct: dict, peer: str,
+                       msg_id: int, revoke: bool = True) -> bool:
+        """발송된 메시지 삭제.
+        msg_id : send_message() 반환 dict 의 "msg_id" 값
+        revoke : True = 상대방 화면에서도 삭제 (양측 삭제)
+        반환   : True = 성공, False = 실패
+        """
+        if not HAS_TELETHON or not msg_id:
+            return False
+        phone = self._normalize_phone(acct.get("phone", ""))
+        try:
+            client, loop = self._ensure_client(acct)
+            self._start_loop_thread(phone, loop)
+
+            async def _delete():
+                if not client.is_connected():
+                    await client.connect()
+                await client.delete_messages(peer, [msg_id], revoke=revoke)
+
+            self._run_in_loop(loop, _delete())
+            self._log_fn(
+                f"[TG:{phone}] 🗑️ 메시지 삭제 완료 (id={msg_id}) → {peer}", "SUCCESS")
+            return True
+        except Exception as _e:
+            self._log_fn(f"[TG:{phone}] ⚠️ 메시지 삭제 실패: {_e}", "WARN")
+            return False
 
     def disconnect_all(self):
         """모든 클라이언트 연결 해제"""
@@ -10834,7 +11143,17 @@ class TelegramAccountsTab(tk.Frame):
             activebackground=PALETTE["hover"],
             relief=tk.FLAT, cursor="hand2",
             padx=12, pady=6, bd=0)
-        reset_btn.pack(side=tk.LEFT)
+        reset_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        dialog_btn = tk.Button(
+            btn_row, text="📋 대화방 목록",
+            command=self._show_dialogs,
+            font=F_BTN_S, bg=PALETTE.get("info", "#2196f3"), fg="#fff",
+            activebackground="#1976d2",
+            activeforeground="#fff",
+            relief=tk.FLAT, cursor="hand2",
+            padx=12, pady=6, bd=0)
+        dialog_btn.pack(side=tk.LEFT)
 
         # ── 안내 ──────────────────────────────────────────
         note_f = tk.Frame(f, bg=PALETTE["card2"],
@@ -11203,6 +11522,114 @@ class TelegramAccountsTab(tk.Frame):
         _get_tg_engine().reset_daily_counts()
         self._refresh_tv()
         self.app._set_status("✅ 일일 발송 카운터가 초기화되었습니다.")
+
+    # ── ④ 대화방 목록 조회 ────────────────────────────────
+    def _show_dialogs(self):
+        """선택된 계정의 가입 채팅방 목록을 팝업 창으로 표시"""
+        if self._sel_idx < 0:
+            messagebox.showwarning("선택 없음", "계정을 선택하세요.")
+            return
+        acct = self._accounts[self._sel_idx]
+        self.app._set_status("📋 대화방 목록 조회 중…")
+
+        def _fetch():
+            eng = _get_tg_engine(lambda m, lv="INFO": None)
+            return eng.get_dialogs(acct, limit=200)
+
+        def _done(dialogs):
+            # 팝업 창 생성
+            pop = tk.Toplevel(self.app)
+            pop.title(f"대화방 목록 — {acct.get('name','')}")
+            pop.geometry("620x480")
+            pop.configure(bg=PALETTE["bg"])
+
+            # 상단 헤더
+            hdr = tk.Frame(pop, bg=PALETTE["primary"], pady=6)
+            hdr.pack(fill=tk.X)
+            tk.Label(hdr,
+                     text=f"📋 {acct.get('name','')} — 가입 채팅방 {len(dialogs)}개",
+                     font=(_FF, 11, "bold"), bg=PALETTE["primary"], fg="#fff"
+                     ).pack(padx=12)
+
+            # 검색 바
+            sf = tk.Frame(pop, bg=PALETTE["bg"], pady=4)
+            sf.pack(fill=tk.X, padx=12)
+            tk.Label(sf, text="🔍", bg=PALETTE["bg"],
+                     fg=PALETTE["text2"]).pack(side=tk.LEFT)
+            search_var = tk.StringVar()
+            search_ent = tk.Entry(sf, textvariable=search_var,
+                                  font=F_BODY, bg=PALETTE["card2"],
+                                  fg=PALETTE["text"],
+                                  insertbackground=PALETTE["text"],
+                                  relief=tk.FLAT,
+                                  highlightbackground=PALETTE["border"],
+                                  highlightthickness=1)
+            search_ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+            # Treeview
+            cols = ("type", "name", "username", "unread")
+            tv_f = tk.Frame(pop, bg=PALETTE["bg"])
+            tv_f.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
+            tv = ttk.Treeview(tv_f, columns=cols, show="headings",
+                               style="Custom.Treeview")
+            tv.heading("type",    text="유형")
+            tv.heading("name",    text="이름")
+            tv.heading("username",text="@링크")
+            tv.heading("unread",  text="미읽음")
+            tv.column("type",    width=70,  anchor="center")
+            tv.column("name",    width=220, anchor="w")
+            tv.column("username",width=160, anchor="w")
+            tv.column("unread",  width=60,  anchor="center")
+            sb = ttk.Scrollbar(tv_f, orient=tk.VERTICAL, command=tv.yview)
+            tv.configure(yscrollcommand=sb.set)
+            tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+            TYPE_ICON = {
+                "user":       "👤",
+                "group":      "👥",
+                "supergroup": "🏢",
+                "channel":    "📢",
+            }
+
+            def _populate(filter_str=""):
+                tv.delete(*tv.get_children())
+                flt = filter_str.strip().lower()
+                for d in dialogs:
+                    name = d.get("name", "")
+                    if flt and flt not in name.lower() and \
+                       flt not in (d.get("username") or "").lower():
+                        continue
+                    icon  = TYPE_ICON.get(d.get("type", ""), "💬")
+                    uname = f"@{d['username']}" if d.get("username") else "-"
+                    tv.insert("", tk.END, values=(
+                        f"{icon} {d.get('type','')}",
+                        name,
+                        uname,
+                        d.get("unread", 0) or "",
+                    ))
+
+            _populate()
+            search_var.trace_add("write",
+                lambda *_: _populate(search_var.get()))
+
+            # 닫기 버튼
+            tk.Button(pop, text="닫기", command=pop.destroy,
+                      font=F_BTN_S, bg=PALETTE["card2"],
+                      fg=PALETTE["text2"],
+                      relief=tk.FLAT, cursor="hand2",
+                      padx=16, pady=5, bd=0
+                      ).pack(pady=(0, 10))
+
+            self.app._set_status(f"✅ 대화방 목록 조회 완료 ({len(dialogs)}개)")
+
+        # 백그라운드 스레드에서 조회 후 메인 스레드에서 UI 생성
+        import threading as _thr
+        def _worker():
+            dialogs = _fetch()
+            self.after(0, lambda: _done(dialogs))
+
+        _thr.Thread(target=_worker, daemon=True).start()
 
     # ── 상태 폴링 (5초마다 Treeview 갱신) ─────────────────
     def _start_status_poll(self):
