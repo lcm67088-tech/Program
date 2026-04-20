@@ -5245,32 +5245,9 @@ class TemplateTab(tk.Frame):
             self._join_first_var = tk.BooleanVar(
                 value=self._cur("join_first", False))
 
-            def _join_first_w(p):
-                tk.Checkbutton(p, text="✅ 가입 후 발송",
-                               variable=self._join_first_var,
-                               command=_toggle_jb_coord,
-                               bg=PALETTE["card"], fg=PALETTE["text"],
-                               selectcolor=PALETTE["active"],
-                               activebackground=PALETTE["card"],
-                               font=F_LABEL,
-                               ).pack(side=tk.LEFT)
-                if _is_tg_api_join:
-                    # Telethon 모드: 좌표 불필요 안내
-                    tk.Label(p, text="(Telethon API — 좌표 설정 불필요, 자동 가입 후 발송)",
-                             font=F_SMALL, bg=PALETTE["card"],
-                             fg=PALETTE["muted"]
-                             ).pack(side=tk.LEFT, padx=(6, 0))
-                else:
-                    # pyautogui 모드: 기존 안내
-                    tk.Label(p, text="(그룹 링크 열고 가입 버튼 클릭 후 메시지 발송)",
-                             font=F_SMALL, bg=PALETTE["card"],
-                             fg=PALETTE["muted"]
-                             ).pack(side=tk.LEFT, padx=(6, 0))
-            row("가입 옵션", _join_first_w)
-
-            # 가입버튼 좌표 행 — pyautogui 모드에서만 표시
-            # Telethon API 모드(계정 있음)에서는 join_group() API 사용 → 좌표 불필요
+            # ── _toggle_jb_coord 먼저 정의 (클로저 순서 버그 방지) ──
             if not _is_tg_api_join:
+                # pyautogui 모드 — 좌표 행 show/hide
                 self._tg_jb_x = tk.StringVar(
                     value=str(self._cur("join_btn_coord", {}).get("x", 0)))
                 self._tg_jb_y = tk.StringVar(
@@ -5311,12 +5288,35 @@ class TemplateTab(tk.Frame):
                         r_jb.pack(fill=tk.X, padx=12, pady=(0, 6))
                     else:
                         r_jb.pack_forget()
-
-                _toggle_jb_coord()  # 초기 상태 반영
             else:
-                # Telethon 모드: _toggle_jb_coord 는 no-op
+                # Telethon API 모드 — 좌표 행 없음, no-op
                 def _toggle_jb_coord(*_):
                     pass
+
+            # ── 체크박스 row 생성 (_toggle_jb_coord 정의 이후) ──────
+            def _join_first_w(p):
+                tk.Checkbutton(p, text="✅ 가입 후 발송",
+                               variable=self._join_first_var,
+                               command=_toggle_jb_coord,
+                               bg=PALETTE["card"], fg=PALETTE["text"],
+                               selectcolor=PALETTE["active"],
+                               activebackground=PALETTE["card"],
+                               font=F_LABEL,
+                               ).pack(side=tk.LEFT)
+                if _is_tg_api_join:
+                    tk.Label(p, text="(Telethon API — 좌표 설정 불필요, 자동 가입 후 발송)",
+                             font=F_SMALL, bg=PALETTE["card"],
+                             fg=PALETTE["muted"]
+                             ).pack(side=tk.LEFT, padx=(6, 0))
+                else:
+                    tk.Label(p, text="(그룹 링크 열고 가입 버튼 클릭 후 메시지 발송)",
+                             font=F_SMALL, bg=PALETTE["card"],
+                             fg=PALETTE["muted"]
+                             ).pack(side=tk.LEFT, padx=(6, 0))
+            row("가입 옵션", _join_first_w)
+
+            # 초기 좌표 행 표시 상태 반영 (pyautogui 모드에서만 의미 있음)
+            _toggle_jb_coord()
 
     # ── 좌표 캡처 — 포인트 ──────────────────────────────────
     def _capture_point(self, key, xv, yv, disp_lbl, disp_wrap=None):
