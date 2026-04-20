@@ -5947,21 +5947,23 @@ class JobsTab(tk.Frame):
         # ── v1.55 CHANGE-A2: "active" 컬럼 추가 ────────────────────────
         # 이전(v1.54): 6개 컬럼 (name/template/platform/workflow/schedule/status)
         # 변경(v1.55): 7번째 "active" 컬럼 추가 → ✓ 활성 / ✗ 비활성 표시
+        # v1.62: 8번째 "account" 컬럼 추가 → 지정 텔레 계정 표시
         cols = ("name", "template", "platform", "workflow",
-                "schedule", "status", "active")
+                "schedule", "status", "active", "account")
         self._tv = ttk.Treeview(
             tv_frame, columns=cols,
             show="headings", height=14)
 
         headers = [
             # (col, 헤더명, 기본너비, 정렬, stretch)
-            ("name",     "작업명",   160, tk.W,      True),
-            ("template", "템플릿명", 150, tk.W,      True),
-            ("platform", "플랫폼",    80, tk.CENTER, False),
-            ("workflow", "작업유형", 130, tk.CENTER, False),
-            ("schedule", "스케줄",   130, tk.CENTER, False),
-            ("status",   "상태",      90, tk.CENTER, False),
-            ("active",   "활성",      52, tk.CENTER, False),
+            ("name",     "작업명",    160, tk.W,      True),
+            ("template", "템플릿명",  140, tk.W,      True),
+            ("platform", "플랫폼",     80, tk.CENTER, False),
+            ("workflow", "작업유형",  120, tk.CENTER, False),
+            ("schedule", "스케줄",    120, tk.CENTER, False),
+            ("status",   "상태",       90, tk.CENTER, False),
+            ("active",   "활성",       52, tk.CENTER, False),
+            ("account",  "텔레 계정", 130, tk.W,      True),
         ]
         for col, hd, w, anch, strch in headers:
             self._tv.heading(col, text=hd, anchor=anch)
@@ -6165,8 +6167,19 @@ class JobsTab(tk.Frame):
             self.after(100, self._restore_scheduler_on_startup)
 
     def _refresh_tv(self):
-        """[v1.61 UI-4] 플랫폼별 행 색상 + 스케줄 상태 아이콘 + 실행 상태 태그 적용"""
+        """[v1.61 UI-4] 플랫폼별 행 색상 + 스케줄 상태 아이콘 + 실행 상태 태그 적용
+        [v1.62] 텔레 계정 컬럼 추가
+        """
         self._tv.delete(*self._tv.get_children())
+
+        # ── v1.62: 계정 이름 조회용 phone→name 매핑 캐시 ─────────────────
+        _all_accts = load_json(TG_ACCOUNTS_PATH, [])
+        _phone_to_name: dict[str, str] = {
+            TelethonEngine._normalize_phone(a.get("phone", "")): a.get("name", "")
+            for a in _all_accts if a.get("phone")
+        }
+        _total_acct_cnt = len(_all_accts)
+
         for j in self._jobs:
             wk    = j.get("workflow", "")
             wdef  = PLATFORM_WORKFLOWS.get(wk, {})
@@ -6218,6 +6231,23 @@ class JobsTab(tk.Frame):
             else:
                 row_tag = "enabled"
 
+            # ── v1.62: 텔레 계정 표시 ────────────────────────────────────
+            # 카카오 작업: "-"
+            # 텔레 작업 + assigned_accounts 없음: "전체 N개"
+            # 텔레 작업 + assigned_accounts 있음: 이름 나열 (2개 초과 시 "외 N명")
+            if plat != "telegram" or not _all_accts:
+                acct_txt = "-"
+            else:
+                assigned = j.get("assigned_accounts", [])
+                if not assigned:
+                    acct_txt = f"전체 {_total_acct_cnt}개"
+                else:
+                    names = [_phone_to_name.get(p, p) for p in assigned]
+                    if len(names) <= 2:
+                        acct_txt = ", ".join(names)
+                    else:
+                        acct_txt = f"{names[0]}, {names[1]} 외 {len(names)-2}명"
+
             act_txt  = "✓ 활성" if enabled else "✗ 비활성"
             self._tv.insert("", tk.END, iid=j.get("name"),
                 values=(j.get("name", ""),
@@ -6225,7 +6255,8 @@ class JobsTab(tk.Frame):
                         icon,
                         wdef.get("name", ""),
                         sched, stat,
-                        act_txt),
+                        act_txt,
+                        acct_txt),
                 tags=(row_tag,))
 
     def _get_selected_job(self) -> dict | None:
