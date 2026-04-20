@@ -7297,25 +7297,16 @@ class JobDialog(tk.Toplevel):
             else:
                 invalid_times.append(t)
 
-        # ── 스케줄 ON 시 입력 유효성 검사 (BUG-03, BUG-04, EDGE-04) ─────────────
-        if sched_on:
-            if invalid_times:
-                messagebox.showwarning("시각 형식 오류",
-                    f"올바르지 않은 시각 형식이 있습니다:\n"
-                    f"{', '.join(invalid_times)}\n\n"
-                    f"HH:MM 형식으로 입력하세요. (예: 09:00, 14:00)")
-                return
-            if sched_mode == "time" and not sched_times:
-                messagebox.showwarning("시각 미입력",
-                    "실행 시각을 1개 이상 입력하세요.\n"
-                    "예: 09:00  또는  09:00, 14:00, 19:00\n\n"
-                    "💡 스케줄이 필요 없으면 '스케줄 사용' 체크를 해제하세요.")
-                return
-            if not days:
-                messagebox.showwarning("요일 미선택",
-                    "실행 요일을 1개 이상 선택하세요.\n\n"
-                    "💡 스케줄이 필요 없으면 '스케줄 사용' 체크를 해제하세요.")
-                return
+        # ── 스케줄 ON 시 입력 유효성 검사 — 형식 오류만 차단, 미입력은 저장 허용 ──
+        # v1.75: 시각 미입력·요일 미선택은 저장을 막지 않음
+        #        (반복 설정만 쓸 경우 스케줄 미완성 상태로도 저장 가능해야 함)
+        if sched_on and invalid_times:
+            messagebox.showwarning("시각 형식 오류",
+                f"올바르지 않은 시각 형식이 있습니다:\n"
+                f"{', '.join(invalid_times)}\n\n"
+                f"HH:MM 형식으로 입력하세요. (예: 09:00, 14:00)\n"
+                f"또는 '스케줄 사용' 체크를 해제하세요.")
+            return
 
         # sched_label 생성 (Treeview 스케줄 컬럼 표시용)
         sched_label = "없음"
