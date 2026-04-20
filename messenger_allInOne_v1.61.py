@@ -9186,12 +9186,18 @@ class WorkflowExecutor:
         tg_min  = safe_float(self.tmpl.get("tg_between_min", 3.0))
         tg_max  = safe_float(self.tmpl.get("tg_between_max", 7.0))
         sw_dly  = safe_float(self.tmpl.get("account_switch_delay", 1.0))
+        # ── [v1.69 BUG-FIX] join_first 체크박스 값 반영 ──────────────
+        # 이전: _run_telegram_message_telethon 이 join_first 를 완전히 무시
+        # 수정: 체크 시 send_message 전 join_group() 먼저 호출
+        join_first     = bool(self.tmpl.get("join_first", False))
+        api_join_delay = safe_float(self.tmpl.get("tg_join_click", 2.0))
 
         mode = self.tmpl.get("account_mode", "zigzag")
         self._log(
             f"[Telethon] 메시지 발송 시작 — 총 {total}명 / "
             f"계정 {len(accounts)}개 / 모드: {mode}"
             + (f" / 이미지: {img_path}" if img_path else "")
+            + (f" / 가입후발송: {'ON' if join_first else 'OFF'}")
             + (f" / 채팅캡처: {'ON' if api_capture_on else 'OFF'}"), "INFO")
         self._log(
             f"  딜레이 — 연결:{api_connect_dly}s / 발송전:{api_before_send}s / "
@@ -9220,6 +9226,21 @@ class WorkflowExecutor:
         def _do_send_one(acct, peer, msg, idx, total_cnt):
             """단일 발송 + 캡처 + 딜레이 처리"""
             self._log(f"[{idx+1}/{total_cnt}] [{acct.get('name','')}] → {peer}")
+
+            # ── [v1.69 BUG-FIX] join_first=True 시 가입 먼저 수행 ────
+            if join_first:
+                self._log(f"  [가입 후 발송] join_group 시도 → {peer}")
+                join_ok = eng.join_group(acct, peer, self._stop)
+                if not join_ok:
+                    self._fail += 1
+                    self._record(peer, "실패")
+                    if self._report_rows:
+                        self._report_rows[-1]["계정"] = acct.get("name", "")
+                        self._report_rows[-1]["비고"] = "가입 실패 (join_first)"
+                    return False
+                self._log(f"  ✅ 가입 완료 — {api_join_delay}s 대기 후 메시지 발송")
+                time.sleep(api_join_delay)
+
             # 발송 전 딜레이
             if api_before_send > 0:
                 time.sleep(api_before_send)
