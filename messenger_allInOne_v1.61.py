@@ -4467,7 +4467,7 @@ class TemplateTab(tk.Frame):
                     _field(rC, lbl_t, var)
                 # 캡처 ON/OFF (v1.62: 채팅캡처 ON = 텍스트+말풍선PNG 동시 저장)
                 self._tg_api_capture_on = tk.BooleanVar(
-                    value=self._cur("tg_api_capture_on", True))
+                    value=self._cur("tg_api_capture_on", False))
                 tk.Checkbutton(rC, text="발송 후 채팅 캡처 ON",
                                variable=self._tg_api_capture_on,
                                bg=PALETTE["card"], fg=PALETTE["text"],
@@ -7334,7 +7334,7 @@ class WorkflowExecutor:
         if not HAS_TELETHON:
             return ""
         # 캡처 ON 설정 확인
-        if not self.tmpl.get("tg_api_capture_on", True):
+        if not self.tmpl.get("tg_api_capture_on", False):
             return ""
         try:
             import datetime as _dt
@@ -8805,7 +8805,7 @@ class WorkflowExecutor:
         api_after_send  = safe_float(self.tmpl.get("tg_api_after_send",    1.0))
         api_capture_dly = safe_float(self.tmpl.get("tg_api_capture_delay", 2.0))
         api_capture_n   = int(safe_float(self.tmpl.get("tg_api_capture_msgs", 5), 5))
-        api_capture_on  = bool(self.tmpl.get("tg_api_capture_on", True))
+        api_capture_on  = bool(self.tmpl.get("tg_api_capture_on", False))
         api_warmup_add  = safe_float(self.tmpl.get("tg_api_acct_warmup",   0.5))
         # ── 발송 전 사전 체크 ON/OFF (UI 체크박스 → 템플릿 저장값) ──
         pre_check_acct  = bool(self.tmpl.get("tg_pre_check_acct", True))
