@@ -9093,8 +9093,7 @@ def _jobs_run_job(self, job: dict, silent: bool = False):
                     f"[스케줄 스킵] [{name}] 이미 실행 중",
                     "WARN", "스케줄러")
         else:
-            messagebox.showinfo("실행 중",
-                f"[{name}] 이미 실행 중입니다.")
+            self.app._set_status(f"⚠️ [{name}] 이미 실행 중입니다.")
         return
 
     # BUG-04 수정: _migrate_template 포함 로드
@@ -10594,7 +10593,7 @@ class TelegramAccountsTab(tk.Frame):
         tk.Label(note_inner,
                  text=(
                      "⚠️  처음 연결 시 전화번호로 OTP 인증이 필요합니다.\n"
-                     "   연결 테스트 버튼을 누르면 콘솔에 인증 코드 입력 창이 뜹니다."
+                     "   연결 테스트 버튼을 클릭하면 콘솔에 인증 코드 입력 창이 뜹니다."
                  ),
                  font=F_SMALL, bg=PALETTE["card2"],
                  fg=PALETTE["muted"], justify=tk.LEFT,
@@ -10936,10 +10935,8 @@ class TelegramAccountsTab(tk.Frame):
             self.app.after(0, lambda: self._fill_form(acct))
             self.app.after(0, self._refresh_tv)
             if ok:
-                self.app.after(0, lambda: messagebox.showinfo(
-                    "연결 성공",
-                    f"✅ [{phone}] 연결 및 인증 완료!\n"
-                    f"세션 파일이 저장되어 다음부터 자동 로그인됩니다."))
+                self.app.after(0, lambda _p=phone: self.app._set_status(
+                    f"✅ [{_p}] 연결 및 인증 완료 — 세션 저장됨"))
             else:
                 self.app.after(0, lambda: messagebox.showwarning(
                     "연결 실패",
@@ -11292,7 +11289,7 @@ class LogTab(tk.Frame):
     # ── CSV 내보내기 ─────────────────────────────────────────
     def _export_csv(self):
         if not self._logs:
-            messagebox.showinfo("없음", "로그가 없습니다.")
+            self._summ_var.set("⚠️ 내보낼 로그가 없습니다.")
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".csv",
@@ -11508,7 +11505,7 @@ class StatsTab(tk.Frame):
 
     def _export_csv(self):
         if not self._records:
-            messagebox.showinfo("없음","통계 데이터 없음")
+            self.app._set_status("⚠️ 내보낼 통계 데이터가 없습니다.")
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".csv",
