@@ -4481,6 +4481,50 @@ class TemplateTab(tk.Frame):
                          bg=PALETTE["card"], fg=PALETTE["muted"]
                          ).pack(side=tk.LEFT, padx=(6, 0))
 
+                # 행G: 발송 전 사전 체크 옵션
+                rG = _row(card)
+                tk.Label(rG, text="발송 전 체크", width=16, anchor=tk.W,
+                         font=F_LABEL, bg=PALETTE["card"], fg=PALETTE["text"]
+                         ).pack(side=tk.LEFT)
+                self._tg_pre_check_acct = tk.BooleanVar(
+                    value=self._cur("tg_pre_check_acct", True))
+                self._tg_pre_check_perm = tk.BooleanVar(
+                    value=self._cur("tg_pre_check_perm", True))
+                tk.Checkbutton(rG, text="계정 상태 확인",
+                               variable=self._tg_pre_check_acct,
+                               bg=PALETTE["card"], fg=PALETTE["text"],
+                               selectcolor=PALETTE["card2"],
+                               activebackground=PALETTE["card"],
+                               font=F_LABEL
+                               ).pack(side=tk.LEFT)
+                _tip_acct = tk.Label(rG, text="?",
+                                     font=(_FF, 7, "bold"),
+                                     bg=PALETTE["primary"], fg="#FFFFFF",
+                                     width=2, cursor="question_arrow",
+                                     relief=tk.FLAT)
+                _tip_acct.pack(side=tk.LEFT, padx=(2, 10))
+                add_tip(_tip_acct,
+                    "발송 전 get_me() 로 계정 제재/밴/스캠 여부 확인\n"
+                    "이상 감지 시 해당 계정 발송 건너뜀\n"
+                    "(OFF: 빠르지만 제재 계정도 시도)")
+                tk.Checkbutton(rG, text="채팅방 권한 확인",
+                               variable=self._tg_pre_check_perm,
+                               bg=PALETTE["card"], fg=PALETTE["text"],
+                               selectcolor=PALETTE["card2"],
+                               activebackground=PALETTE["card"],
+                               font=F_LABEL
+                               ).pack(side=tk.LEFT)
+                _tip_perm = tk.Label(rG, text="?",
+                                     font=(_FF, 7, "bold"),
+                                     bg=PALETTE["primary"], fg="#FFFFFF",
+                                     width=2, cursor="question_arrow",
+                                     relief=tk.FLAT)
+                _tip_perm.pack(side=tk.LEFT, padx=(2, 0))
+                add_tip(_tip_perm,
+                    "발송 전 get_permissions() 로 밴/비멤버/전송권한 확인\n"
+                    "권한 없는 채팅방 자동 스킵\n"
+                    "(OFF: 빠르지만 권한없는 방도 시도)")
+
                 # 행D: 링크 간격
                 rD = _row(card)
                 tk.Label(rD, text="링크 간격", width=16, anchor=tk.W,
@@ -4649,6 +4693,8 @@ class TemplateTab(tk.Frame):
                 self._tg_api_capture_msgs  = tk.StringVar(value="5")
                 self._tg_api_capture_on    = tk.BooleanVar(value=False)
                 self._tg_api_acct_warmup   = tk.StringVar(value="0.5")
+                self._tg_pre_check_acct    = tk.BooleanVar(value=True)
+                self._tg_pre_check_perm    = tk.BooleanVar(value=True)
 
                 tk.Frame(card, bg=PALETTE["card"], height=4).pack()
 
@@ -5534,6 +5580,11 @@ class TemplateTab(tk.Frame):
                         data[_key] = _default
             if hasattr(self, "_tg_api_capture_on"):
                 data["tg_api_capture_on"] = bool(self._tg_api_capture_on.get())
+            # ▶ 발송 전 사전 체크 ON/OFF 저장
+            if hasattr(self, "_tg_pre_check_acct"):
+                data["tg_pre_check_acct"] = bool(self._tg_pre_check_acct.get())
+            if hasattr(self, "_tg_pre_check_perm"):
+                data["tg_pre_check_perm"] = bool(self._tg_pre_check_perm.get())
 
             # ▶ Telethon 다계정 모드 저장
             if hasattr(self, "_account_mode_var"):
@@ -7653,11 +7704,12 @@ class WorkflowExecutor:
         """발행 결과를 리포트 버퍼에 기록"""
         import datetime as _dt
         self._report_rows.append({
-            "시각":   _dt.datetime.now().strftime("%H:%M:%S"),
-            "대상":   target,
-            "결과":   status,          # 성공 / 실패 / 건너뜀
-            "비고":   note,
-            "계정":   "",              # 호출 측에서 덮어쓸 수 있음
+            "시각":     _dt.datetime.now().strftime("%H:%M:%S"),
+            "대상":     target,
+            "결과":     status,          # 성공 / 실패 / 건너뜀
+            "비고":     note,
+            "계정":     "",              # 호출 측에서 덮어쓸 수 있음
+            "msg_id":   "",              # Telethon 발송 시 메시지 ID
         })
 
     def _save_report(self):
@@ -7692,7 +7744,7 @@ class WorkflowExecutor:
                 writer.writerow(["소요시간", elapsed])
                 writer.writerow([])
                 # 상세 결과
-                fields = ["시각", "대상", "결과", "계정", "비고"]
+                fields = ["시각", "대상", "결과", "계정", "msg_id", "비고"]
                 writer.writerow(fields)
                 for row in self._report_rows:
                     writer.writerow([row.get(k, "") for k in fields])
@@ -8725,6 +8777,9 @@ class WorkflowExecutor:
         api_capture_n   = int(safe_float(self.tmpl.get("tg_api_capture_msgs", 5), 5))
         api_capture_on  = bool(self.tmpl.get("tg_api_capture_on", True))
         api_warmup_add  = safe_float(self.tmpl.get("tg_api_acct_warmup",   0.5))
+        # ── 발송 전 사전 체크 ON/OFF (UI 체크박스 → 템플릿 저장값) ──
+        pre_check_acct  = bool(self.tmpl.get("tg_pre_check_acct", True))
+        pre_check_perm  = bool(self.tmpl.get("tg_pre_check_perm", True))
         tg_min  = safe_float(self.tmpl.get("tg_between_min", 3.0))
         tg_max  = safe_float(self.tmpl.get("tg_between_max", 7.0))
         sw_dly  = safe_float(self.tmpl.get("account_switch_delay", 1.0))
@@ -8766,7 +8821,9 @@ class WorkflowExecutor:
             if api_before_send > 0:
                 time.sleep(api_before_send)
             result  = eng.send_message(acct, peer, msg, self._stop,
-                                       img_path=img_path)
+                                       img_path=img_path,
+                                       pre_check_acct=pre_check_acct,
+                                       pre_check_perm=pre_check_perm)
             ok      = result.get("ok", False)
             msg_id  = result.get("msg_id")          # ★ 메시지 ID
             if ok:
@@ -8776,10 +8833,9 @@ class WorkflowExecutor:
                 self._fail += 1
                 self._record(peer, "실패")
             if self._report_rows:
-                self._report_rows[-1]["계정"]  = acct.get("name", "")
+                self._report_rows[-1]["계정"]   = acct.get("name", "")
                 if msg_id:
-                    # 리포트 비고에 메시지 ID 기록
-                    self._report_rows[-1]["비고"] += f" [msg_id={msg_id}]"
+                    self._report_rows[-1]["msg_id"] = str(msg_id)   # ★ 전용 컬럼
             # 발송 후 딜레이
             if api_after_send > 0:
                 time.sleep(api_after_send)
@@ -10476,10 +10532,13 @@ class TelethonEngine:
 
     def send_message(self, acct: dict, peer: str, message: str,
                      stop_event: threading.Event = None,
-                     img_path: str = "") -> dict:
+                     img_path: str = "",
+                     pre_check_acct: bool = True,
+                     pre_check_perm: bool = True) -> dict:
         """메시지 전송  [TG-1]
-        img_path: 이미지 파일 경로 (비어 있으면 텍스트만 전송)
-                  Telethon API 모드에서는 좌표 없이 직접 파일 전송 가능
+        img_path       : 이미지 파일 경로 (비어 있으면 텍스트만 전송)
+        pre_check_acct : True 이면 발송 전 get_me() 로 계정 제재/밴 확인
+        pre_check_perm : True 이면 발송 전 get_permissions() 로 채팅방 권한 확인
 
         반환값: {"ok": bool, "msg_id": int|None}
           · ok=True, msg_id=정수  → 전송 성공 (서버 확인된 메시지 ID)
@@ -10491,28 +10550,30 @@ class TelethonEngine:
 
         phone = self._normalize_phone(acct.get("phone", ""))  # 국제 형식 변환
 
-        # ── ① 발송 전 계정 상태 체크 (get_me) ─────────────────
-        try:
-            _me_info = self._check_account_status(acct)
-            if _me_info.get("restricted") or _me_info.get("banned"):
-                self._log_fn(
-                    f"[TG:{phone}] ⛔ 계정 제재/밴 감지 — 발송 건너뜀 "
-                    f"({_me_info.get('reason','unknown')})", "ERROR")
-                self._status[phone] = self.ST_BANNED
-                return _FAIL
-        except Exception:
-            pass  # 상태 체크 실패 시 계속 진행
+        # ── ① 발송 전 계정 상태 체크 (get_me) — UI 체크박스 연동 ───
+        if pre_check_acct:
+            try:
+                _me_info = self._check_account_status(acct)
+                if _me_info.get("restricted") or _me_info.get("banned"):
+                    self._log_fn(
+                        f"[TG:{phone}] ⛔ 계정 제재/밴 감지 — 발송 건너뜀 "
+                        f"({_me_info.get('reason','unknown')})", "ERROR")
+                    self._status[phone] = self.ST_BANNED
+                    return _FAIL
+            except Exception:
+                pass  # 상태 체크 실패 시 계속 진행
 
-        # ── ③ 발송 전 채팅방 권한 체크 (get_permissions) ─────
-        try:
-            _perm = self.check_peer_permission(acct, peer)
-            if not _perm.get("ok", True):
-                self._log_fn(
-                    f"[TG:{phone}] ⛔ 채팅방 권한 없음 [{peer}] — 건너뜀 "
-                    f"({_perm.get('reason','')})", "ERROR")
-                return _FAIL
-        except Exception:
-            pass  # 권한 체크 실패 시 계속 진행
+        # ── ③ 발송 전 채팅방 권한 체크 (get_permissions) — UI 체크박스 연동 ─
+        if pre_check_perm:
+            try:
+                _perm = self.check_peer_permission(acct, peer)
+                if not _perm.get("ok", True):
+                    self._log_fn(
+                        f"[TG:{phone}] ⛔ 채팅방 권한 없음 [{peer}] — 건너뜀 "
+                        f"({_perm.get('reason','')})", "ERROR")
+                    return _FAIL
+            except Exception:
+                pass  # 권한 체크 실패 시 계속 진행
 
         daily_limit = int(acct.get("daily_limit", 500))
         warmup      = acct.get("warmup", False)
@@ -11153,7 +11214,27 @@ class TelegramAccountsTab(tk.Frame):
             activeforeground="#fff",
             relief=tk.FLAT, cursor="hand2",
             padx=12, pady=6, bd=0)
-        dialog_btn.pack(side=tk.LEFT)
+        dialog_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        acct_check_btn = tk.Button(
+            btn_row, text="🔍 계정 상태 확인",
+            command=self._check_acct_status_ui,
+            font=F_BTN_S, bg=PALETTE.get("warning", "#f59e0b"), fg="#fff",
+            activebackground="#d97706",
+            activeforeground="#fff",
+            relief=tk.FLAT, cursor="hand2",
+            padx=12, pady=6, bd=0)
+        acct_check_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        all_check_btn = tk.Button(
+            btn_row, text="🔍 전체 계정 확인",
+            command=self._check_all_accts_ui,
+            font=F_BTN_S, bg=PALETTE.get("warning", "#f59e0b"), fg="#fff",
+            activebackground="#d97706",
+            activeforeground="#fff",
+            relief=tk.FLAT, cursor="hand2",
+            padx=12, pady=6, bd=0)
+        all_check_btn.pack(side=tk.LEFT)
 
         # ── 안내 ──────────────────────────────────────────
         note_f = tk.Frame(f, bg=PALETTE["card2"],
@@ -11522,6 +11603,109 @@ class TelegramAccountsTab(tk.Frame):
         _get_tg_engine().reset_daily_counts()
         self._refresh_tv()
         self.app._set_status("✅ 일일 발송 카운터가 초기화되었습니다.")
+
+    # ── 계정 상태 확인 (단일 계정) ─────────────────────────
+    def _check_acct_status_ui(self):
+        """선택된 계정 1개의 상태를 get_me() 로 확인 → 팝업 결과 표시"""
+        if self._sel_idx < 0:
+            messagebox.showwarning("선택 없음", "확인할 계정을 선택하세요.")
+            return
+        acct = self._accounts[self._sel_idx]
+        self.app._set_status(f"🔍 [{acct.get('name','')}] 계정 상태 확인 중…")
+
+        import threading as _thr
+        def _worker():
+            eng  = _get_tg_engine(lambda m, lv="INFO": None)
+            info = eng._check_account_status(acct)
+            self.after(0, lambda: self._show_acct_status_result([acct], [info]))
+
+        _thr.Thread(target=_worker, daemon=True).start()
+
+    # ── 계정 상태 확인 (전체 계정) ────────────────────────
+    def _check_all_accts_ui(self):
+        """전체 계정 상태를 get_me() 로 확인 → 팝업 결과 표시"""
+        if not self._accounts:
+            messagebox.showwarning("계정 없음", "등록된 계정이 없습니다.")
+            return
+        self.app._set_status(f"🔍 전체 {len(self._accounts)}개 계정 상태 확인 중…")
+
+        import threading as _thr
+        def _worker():
+            eng     = _get_tg_engine(lambda m, lv="INFO": None)
+            results = []
+            for acct in self._accounts:
+                info = eng._check_account_status(acct)
+                results.append(info)
+            self.after(0, lambda: self._show_acct_status_result(
+                self._accounts, results))
+
+        _thr.Thread(target=_worker, daemon=True).start()
+
+    def _show_acct_status_result(self, accounts: list, results: list):
+        """계정 상태 조회 결과를 팝업 Treeview 로 표시"""
+        pop = tk.Toplevel(self.app)
+        pop.title("계정 상태 확인 결과")
+        pop.geometry("680x400")
+        pop.configure(bg=PALETTE["bg"])
+
+        # 헤더
+        hdr = tk.Frame(pop, bg=PALETTE["primary"], pady=6)
+        hdr.pack(fill=tk.X)
+        ok_cnt  = sum(1 for r in results if r.get("ok"))
+        bad_cnt = len(results) - ok_cnt
+        tk.Label(hdr,
+                 text=f"🔍 계정 상태 확인 — 정상 {ok_cnt}개 / 이상 {bad_cnt}개",
+                 font=(_FF, 11, "bold"), bg=PALETTE["primary"], fg="#fff"
+                 ).pack(padx=12)
+
+        # Treeview
+        cols = ("name", "phone", "status", "id", "username", "reason")
+        tv_f = tk.Frame(pop, bg=PALETTE["bg"])
+        tv_f.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
+        tv = ttk.Treeview(tv_f, columns=cols, show="headings",
+                           style="Custom.Treeview")
+        headers_def = [
+            ("name",     "이름",       130),
+            ("phone",    "전화번호",   130),
+            ("status",   "상태",        80),
+            ("id",       "계정 ID",    100),
+            ("username", "@링크",      110),
+            ("reason",   "이상 사유",  180),
+        ]
+        for col, hd, w in headers_def:
+            tv.heading(col, text=hd)
+            tv.column(col, width=w, anchor="center" if col != "reason" else "w")
+        sb = ttk.Scrollbar(tv_f, orient=tk.VERTICAL, command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 태그 색상
+        tv.tag_configure("ok",  background="#F0FDF4")
+        tv.tag_configure("bad", background="#FEF2F2")
+
+        for acct, info in zip(accounts, results):
+            ok     = info.get("ok", False)
+            status = "✅ 정상" if ok else "⚠️ 이상"
+            tag    = "ok" if ok else "bad"
+            tv.insert("", tk.END, tags=(tag,), values=(
+                acct.get("name", ""),
+                acct.get("phone", ""),
+                status,
+                info.get("id", "") or "",
+                f"@{info['username']}" if info.get("username") else "-",
+                info.get("reason", "") or "없음",
+            ))
+
+        # 닫기
+        tk.Button(pop, text="닫기", command=pop.destroy,
+                  font=F_BTN_S, bg=PALETTE["card2"],
+                  fg=PALETTE["text2"],
+                  relief=tk.FLAT, cursor="hand2",
+                  padx=16, pady=5, bd=0
+                  ).pack(pady=(0, 10))
+
+        self.app._set_status(f"✅ 계정 상태 확인 완료 — 정상 {ok_cnt} / 이상 {bad_cnt}")
 
     # ── ④ 대화방 목록 조회 ────────────────────────────────
     def _show_dialogs(self):
