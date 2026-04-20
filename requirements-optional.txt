@@ -1,22 +1,29 @@
 # ============================================================
-# messenger_allInOne  선택(Optional) 의존성
+#  messenger_allInOne  v1.72  — 선택(Optional) 의존성
 # ============================================================
-# 설치 명령:
-#   pip install -r requirements-optional.txt
 #
-# 아래 패키지가 없어도 Telethon 기반 동작은 가능합니다.
-# 단, Chrome GUI 자동화(pyautogui 폴백) 또는
-# 카카오 OCR 기능을 사용할 경우 필요합니다.
+#  설치 방법:
+#    python -m pip install -r requirements-optional.txt
+#
+#  아래 패키지가 없어도 Telethon(API) 기반 동작은 완전히 가능합니다.
+#  Chrome GUI 자동화(pyautogui 폴백) 또는 카카오 OCR 기능을
+#  사용할 경우에만 필요합니다.
 # ============================================================
 
-# ── GUI 자동화 (Telethon 미설치 시 폴백 경로) ─────────────────
+# ── GUI 자동화 (Telethon 계정 미등록 시 폴백 경로) ──────────
 pyautogui>=0.9.54           # 마우스/키보드 자동화
                             # (Chrome 창 제어, 메시지 입력 폴백)
 pygetwindow>=0.0.9          # 활성 창 감지 (파일 대화상자 검출)
 
 # ── OCR (카카오 친구추가 텍스트 인식) ────────────────────────
 pytesseract>=0.3.10         # Tesseract OCR 파이썬 바인딩
+                            #
                             # ※ Tesseract 엔진 별도 설치 필요:
                             #   https://github.com/UB-Mannheim/tesseract/wiki
-                            #   설치 후 PATH에 등록 또는
-                            #   pytesseract.pytesseract.tesseract_cmd 경로 지정
+                            #   설치 후 PATH 에 등록하거나,
+                            #   코드 내 tesseract_cmd 경로를 직접 지정하세요.
+
+# ── community_poster (커뮤니티 자동 포스팅 도구) ─────────────
+# community_poster_v5.20.py 를 사용할 경우에만 필요합니다.
+selenium>=4.18.0            # Selenium WebDriver
+undetected-chromedriver>=3.5.5  # 봇 탐지 우회 ChromeDriver
