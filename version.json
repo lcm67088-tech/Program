@@ -1,7 +1,7 @@
 {
-  "version": "1.61",
-  "download_url": "https://github.com/lcm67088-tech/Program/raw/main/1.61%20%EB%A9%94%EC%8B%A0%EC%A0%80%20%EC%98%AC%EC%9D%B8%EC%9B%90.zip",
+  "version": "1.78",
+  "download_url": "https://github.com/lcm67088-tech/Program/raw/main/messenger_allInOne_v1.78.py",
   "md5": "",
-  "release_notes": "v1.61 — Telethon 다계정 엔진 / UI 리디자인 / 스케줄 threading 재작성",
-  "updated_at": "2026-04-17"
+  "release_notes": "v1.78 — 로그 분석 기반 긴급 조치: Frozen 자동 감지·차단, 없는채팅방 블랙리스트, FloodWait 임계값 중단, t.me 링크 추출기, LogTab 긴급 패널, 결과 리포트",
+  "updated_at": "2026-04-21"
 }
