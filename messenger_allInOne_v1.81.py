@@ -1,6 +1,18 @@
 # ============================================================
-# messenger_allInOne_v1.80  변경 이력
+# messenger_allInOne_v1.81  변경 이력
 # ============================================================
+#
+# v1.81 (2026-04-21) ─── 대화방 전송 권한 점검 기능
+#
+# [v1.81-1]  check_peer_permission send_media 항목 추가
+#   · 텍스트 전송 가능 여부(send_messages) + 이미지/파일 전송(send_media) 동시 확인
+#
+# [v1.81-2]  대화방 목록 팝업 전송 권한 점검 UI
+#   · Treeview에 텍스트/이미지 컬럼 추가 (—: 미점검, ✅: 가능, ❌: 불가)
+#   · 🔍 선택 항목 점검 — 선택한 채팅방만 빠르게 점검
+#   · 🔍 전체 점검 — 모든 채팅방 순차 점검 (백그라운드 스레드)
+#   · 실시간 진행 상황 표시 (N/전체, ✅가능, ❌불가, 📎이미지만불가)
+#   · 팝업 창 720x560으로 확장
 #
 # v1.80 (2026-04-21) ─── 대화방 목록 t.me 링크 추출 기능 추가
 #
@@ -11148,17 +11160,19 @@ class TelethonEngine:
 
     # ── ③ 채팅방 권한 체크 (get_permissions) ──────────────────────────
     def check_peer_permission(self, acct: dict, peer: str) -> dict:
-        """발송 전 해당 채팅방에서 내 계정의 전송 권한 확인.
+        """발송 전 해당 채팅방에서 내 계정의 전송 권한 확인.  [v1.81: send_media 추가]
 
         반환: {
-            "ok":           bool,   # True = 발송 가능
+            "ok":           bool,   # True = 텍스트 발송 가능
             "is_member":    bool,
-            "send_messages":bool,
+            "send_messages":bool,   # 텍스트 전송 가능
+            "send_media":   bool,   # 이미지/파일 전송 가능
             "is_banned":    bool,
             "reason":       str,
         }
         """
-        empty = {"ok": False, "is_member": False, "send_messages": False,
+        empty = {"ok": False, "is_member": False,
+                 "send_messages": False, "send_media": False,
                  "is_banned": False, "reason": ""}
         if not HAS_TELETHON:
             return empty
@@ -11170,27 +11184,31 @@ class TelethonEngine:
             async def _check():
                 if not client.is_connected():
                     await client.connect()
-                me     = await client.get_me()
-                perms  = await client.get_permissions(peer, me)
+                me    = await client.get_me()
+                perms = await client.get_permissions(peer, me)
                 return perms
 
             perms = self._run_in_loop(loop, _check())
             if perms is None:
                 return {**empty, "reason": "권한 조회 실패"}
 
-            is_banned       = bool(getattr(perms, "is_banned",      False))
-            is_member       = bool(getattr(perms, "is_member",      True))
-            send_messages   = bool(getattr(perms, "send_messages",  True))
+            is_banned     = bool(getattr(perms, "is_banned",      False))
+            is_member     = bool(getattr(perms, "is_member",      True))
+            send_messages = bool(getattr(perms, "send_messages",  True))
+            # send_media: Telethon perms 에 없으면 send_messages 와 동일하게 간주
+            send_media    = bool(getattr(perms, "send_media",     send_messages))
 
             reasons = []
-            if is_banned:     reasons.append("밴")
-            if not is_member: reasons.append("비멤버")
-            if not send_messages: reasons.append("전송권한없음")
+            if is_banned:          reasons.append("밴")
+            if not is_member:      reasons.append("비멤버")
+            if not send_messages:  reasons.append("텍스트전송불가")
+            if not send_media:     reasons.append("미디어전송불가")
 
             result = {
                 "ok":           not is_banned and is_member and send_messages,
                 "is_member":    is_member,
                 "send_messages":send_messages,
+                "send_media":   send_media,
                 "is_banned":    is_banned,
                 "reason":       ", ".join(reasons),
             }
@@ -11201,7 +11219,8 @@ class TelethonEngine:
 
         except Exception:
             # get_permissions 미지원 채팅방(채널 등)은 정상 처리
-            return {"ok": True, "is_member": True, "send_messages": True,
+            return {"ok": True, "is_member": True,
+                    "send_messages": True, "send_media": True,
                     "is_banned": False, "reason": ""}
 
     def connect(self, acct: dict,
@@ -12843,7 +12862,7 @@ class TelegramAccountsTab(tk.Frame):
             # 팝업 창 생성
             pop = tk.Toplevel(self.app)
             pop.title(f"대화방 목록 — {acct.get('name','')}")
-            pop.geometry("620x480")
+            pop.geometry("720x560")
             pop.configure(bg=PALETTE["bg"])
 
             # 상단 헤더
@@ -12869,8 +12888,8 @@ class TelegramAccountsTab(tk.Frame):
                                   highlightthickness=1)
             search_ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
-            # Treeview
-            cols = ("type", "name", "username", "unread")
+            # Treeview  [v1.81: 전송/이미지 권한 컬럼 추가]
+            cols = ("type", "name", "username", "unread", "msg", "media")
             tv_f = tk.Frame(pop, bg=PALETTE["bg"])
             tv_f.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
             tv = ttk.Treeview(tv_f, columns=cols, show="headings",
@@ -12879,10 +12898,18 @@ class TelegramAccountsTab(tk.Frame):
             tv.heading("name",    text="이름")
             tv.heading("username",text="@링크")
             tv.heading("unread",  text="미읽음")
+            tv.heading("msg",     text="텍스트")
+            tv.heading("media",   text="이미지")
             tv.column("type",    width=70,  anchor="center")
-            tv.column("name",    width=220, anchor="w")
-            tv.column("username",width=160, anchor="w")
-            tv.column("unread",  width=60,  anchor="center")
+            tv.column("name",    width=190, anchor="w")
+            tv.column("username",width=140, anchor="w")
+            tv.column("unread",  width=55,  anchor="center")
+            tv.column("msg",     width=60,  anchor="center")
+            tv.column("media",   width=60,  anchor="center")
+            # 태그 색상
+            tv.tag_configure("ok",    foreground=PALETTE["success"])
+            tv.tag_configure("warn",  foreground=PALETTE["warning"])
+            tv.tag_configure("error", foreground=PALETTE["danger"])
             sb = ttk.Scrollbar(tv_f, orient=tk.VERTICAL, command=tv.yview)
             tv.configure(yscrollcommand=sb.set)
             tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -12895,6 +12922,9 @@ class TelegramAccountsTab(tk.Frame):
                 "channel":    "📢",
             }
 
+            # dialog 결과에 권한 캐시 보관 {"username": {ok, send_messages, send_media}}
+            _perm_cache: dict = {}
+
             def _populate(filter_str=""):
                 tv.delete(*tv.get_children())
                 flt = filter_str.strip().lower()
@@ -12905,16 +12935,133 @@ class TelegramAccountsTab(tk.Frame):
                         continue
                     icon  = TYPE_ICON.get(d.get("type", ""), "💬")
                     uname = f"@{d['username']}" if d.get("username") else "-"
-                    tv.insert("", tk.END, values=(
-                        f"{icon} {d.get('type','')}",
-                        name,
-                        uname,
-                        d.get("unread", 0) or "",
-                    ))
+                    key   = d.get("username") or str(d.get("id", ""))
+                    perm  = _perm_cache.get(key)
+                    if perm is None:
+                        msg_icon   = "—"
+                        media_icon = "—"
+                        row_tag    = ""
+                    else:
+                        msg_icon   = "✅" if perm.get("send_messages") else "❌"
+                        media_icon = "✅" if perm.get("send_media")    else "❌"
+                        row_tag    = "ok" if perm.get("ok") else "error"
+                    tv.insert("", tk.END,
+                              values=(f"{icon} {d.get('type','')}",
+                                      name, uname,
+                                      d.get("unread", 0) or "",
+                                      msg_icon, media_icon),
+                              tags=(row_tag,) if row_tag else ())
 
             _populate()
             search_var.trace_add("write",
                 lambda *_: _populate(search_var.get()))
+
+            # ── v1.81: 전송 권한 점검 버튼 바 ──────────────────
+            chk_bar = tk.Frame(pop, bg=PALETTE["card"],
+                               highlightbackground=PALETTE["border"],
+                               highlightthickness=1)
+            chk_bar.pack(fill=tk.X, padx=12, pady=(0, 4))
+            chk_inner = tk.Frame(chk_bar, bg=PALETTE["card"])
+            chk_inner.pack(fill=tk.X, padx=10, pady=6)
+
+            _chk_status_var = tk.StringVar(
+                value="💬 텍스트 · 📎 이미지 전송 가능 여부를 점검합니다")
+            tk.Label(chk_inner, textvariable=_chk_status_var,
+                     font=(_FF, 8), bg=PALETTE["card"],
+                     fg=PALETTE["muted"]).pack(side=tk.LEFT, padx=(0, 10))
+
+            def _run_check_selected():
+                """선택된 채팅방만 권한 점검"""
+                sel = tv.selection()
+                if not sel:
+                    messagebox.showinfo("선택 없음",
+                        "점검할 채팅방을 선택하세요.\n(Ctrl+클릭으로 다중 선택)")
+                    return
+                # 선택 항목에서 username/id 추출
+                targets = []
+                for item in sel:
+                    vals  = tv.item(item, "values")
+                    uname = vals[2] if len(vals) > 2 else ""
+                    name  = vals[1] if len(vals) > 1 else ""
+                    peer  = uname.lstrip("@") if uname != "-" else ""
+                    # peer 없으면 이름으로 찾기
+                    if not peer:
+                        for d in dialogs:
+                            if d.get("name") == name:
+                                peer = str(d.get("id", ""))
+                                break
+                    targets.append((name, peer,
+                                    uname.lstrip("@") if uname != "-" else None))
+                _do_check(targets)
+
+            def _run_check_all():
+                """전체 채팅방 권한 점검"""
+                targets = []
+                for d in dialogs:
+                    peer = d.get("username") or str(d.get("id", ""))
+                    targets.append((d.get("name", ""), peer, d.get("username")))
+                _do_check(targets)
+
+            def _do_check(targets):
+                """백그라운드 스레드에서 권한 점검 후 결과를 Treeview에 반영"""
+                total = len(targets)
+                _chk_status_var.set(f"🔍 점검 중… 0 / {total}")
+                chk_btn_sel.config(state=tk.DISABLED)
+                chk_btn_all.config(state=tk.DISABLED)
+
+                import threading as _thr
+                def _worker():
+                    eng = _get_tg_engine(lambda m, lv="INFO": None)
+                    for idx, (name, peer, uname_key) in enumerate(targets, 1):
+                        if not peer:
+                            continue
+                        perm = eng.check_peer_permission(acct, peer)
+                        key  = uname_key or peer
+                        _perm_cache[key] = perm
+                        # 진행 상황 UI 업데이트 (메인 스레드)
+                        ok_cnt  = sum(1 for v in _perm_cache.values() if v.get("ok"))
+                        bad_cnt = sum(1 for v in _perm_cache.values() if not v.get("ok"))
+                        pop.after(0, lambda i=idx, o=ok_cnt, b=bad_cnt:
+                            _chk_status_var.set(
+                                f"🔍 점검 중… {i} / {total}  "
+                                f"✅ {o}개 가능  ❌ {b}개 불가"))
+                        pop.after(0, lambda: _populate(search_var.get()))
+
+                    # 완료
+                    ok_cnt  = sum(1 for v in _perm_cache.values() if v.get("ok"))
+                    bad_cnt = sum(1 for v in _perm_cache.values() if not v.get("ok"))
+                    med_bad = sum(1 for v in _perm_cache.values()
+                                  if v.get("send_messages") and not v.get("send_media"))
+                    pop.after(0, lambda: (
+                        _chk_status_var.set(
+                            f"✅ 점검 완료 — 전송가능 {ok_cnt}개  "
+                            f"❌ 불가 {bad_cnt}개  "
+                            f"📎 이미지만불가 {med_bad}개"),
+                        chk_btn_sel.config(state=tk.NORMAL),
+                        chk_btn_all.config(state=tk.NORMAL),
+                    ))
+
+                _thr.Thread(target=_worker, daemon=True).start()
+
+            chk_btn_sel = tk.Button(chk_inner,
+                      text="🔍 선택 항목 점검",
+                      command=_run_check_selected,
+                      font=F_BTN_S,
+                      bg=PALETTE["warning_text"], fg="#fff",
+                      activebackground=_lighten(PALETTE["warning_text"], -0.1),
+                      relief=tk.FLAT, cursor="hand2",
+                      padx=10, pady=3, bd=0)
+            chk_btn_sel.pack(side=tk.RIGHT, padx=(4, 0))
+
+            chk_btn_all = tk.Button(chk_inner,
+                      text="🔍 전체 점검",
+                      command=_run_check_all,
+                      font=F_BTN_S,
+                      bg="#7C3AED", fg="#fff",
+                      activebackground="#6D28D9",
+                      relief=tk.FLAT, cursor="hand2",
+                      padx=10, pady=3, bd=0)
+            chk_btn_all.pack(side=tk.RIGHT, padx=(0, 4))
 
             # ── v1.80: t.me 링크 추출 버튼 바 ──────────────────
             link_bar = tk.Frame(pop, bg=PALETTE["card"],
