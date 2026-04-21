@@ -11452,12 +11452,24 @@ class TelethonEngine:
                 self._daily_cnt[phone] = self._daily_cnt.get(phone, 0) + 1
                 # v1.78: 가입 횟수 별도 카운트
                 self._join_cnt[phone] = self._join_cnt.get(phone, 0) + 1
+
+            # [v1.86] 가입 직후 FROZEN 재확인 — 가입 성공 직후 텔레그램이
+            # 계정을 frozen 처리하는 경우 _retry_run은 True를 반환했지만
+            # 이미 mark_frozen이 호출된 상태일 수 있음 → False 반환으로 루프 탈출
+            if self.is_frozen(phone):
+                self._log_fn(
+                    f"[TG:{phone}] 🚨 가입 후 FROZEN 감지 — 즉시 중단!", "ERROR")
+                return False
+
             self._status[phone] = self.ST_IDLE
             self._log_fn(f"[TG:{phone}] ✅ 가입 완료: {link}", "SUCCESS")
             return True
 
         except Exception as e:
-            return self._handle_error(phone, e, link)
+            # [v1.86] _handle_error는 dict를 반환하므로 join_group은 명시적으로 False 반환
+            # dict는 truthy이므로 기존 코드는 실패도 ok=True로 처리되는 버그 있었음
+            self._handle_error(phone, e, link)
+            return False
 
     def send_message(self, acct: dict, peer: str, message: str,
                      stop_event: threading.Event = None,
