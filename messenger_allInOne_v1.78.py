@@ -11635,13 +11635,16 @@ class TelethonEngine:
 _tg_engine: TelethonEngine | None = None
 
 
-def _get_tg_engine(log_fn=None) -> TelethonEngine:
-    """전역 TelethonEngine 싱글톤 반환"""
+def _get_tg_engine(log_fn=None, alert_fn=None) -> TelethonEngine:
+    """전역 TelethonEngine 싱글톤 반환  [v1.78: alert_fn 연동]"""
     global _tg_engine
     if _tg_engine is None:
-        _tg_engine = TelethonEngine(log_fn=log_fn)
-    elif log_fn:
-        _tg_engine._log_fn = log_fn
+        _tg_engine = TelethonEngine(log_fn=log_fn, alert_fn=alert_fn)
+    else:
+        if log_fn:
+            _tg_engine._log_fn = log_fn
+        if alert_fn:
+            _tg_engine._alert_fn = alert_fn
     return _tg_engine
 
 
@@ -12200,8 +12203,8 @@ class TelegramAccountsTab(tk.Frame):
         out_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 4))
         result_hdr = tk.Frame(out_frame, bg=PALETTE["card"])
         result_hdr.pack(fill=tk.X)
-        self._link_count_var = tk.StringVar(value="📤 추출 결과 — 0건")
-        tk.Label(result_hdr, textvariable=self._link_count_var,
+        _link_count_var = tk.StringVar(value="📤 추출 결과 — 0건")
+        tk.Label(result_hdr, textvariable=_link_count_var,
                  font=(_FF, 8, "bold"), bg=PALETTE["card"],
                  fg=PALETTE["muted"]).pack(side=tk.LEFT, padx=8, pady=(6, 2))
 
@@ -12210,8 +12213,8 @@ class TelegramAccountsTab(tk.Frame):
             if txt:
                 src_win.clipboard_clear()
                 src_win.clipboard_append(txt)
-                self._link_count_var.set(
-                    self._link_count_var.get() + "  ✅ 복사됨")
+                _link_count_var.set(
+                    _link_count_var.get() + "  ✅ 복사됨")
         tk.Button(result_hdr, text="📋 복사",
                   command=_do_copy,
                   font=F_BTN_S, bg=PALETTE["primary"], fg="#fff",
@@ -12249,7 +12252,7 @@ class TelegramAccountsTab(tk.Frame):
                     normalized.append(lnk)
             out_text.delete("1.0", tk.END)
             out_text.insert(tk.END, "\n".join(normalized))
-            self._link_count_var.set(
+            _link_count_var.set(
                 f"📤 추출 결과 — {len(normalized)}건")
 
         btn_row2 = tk.Frame(src_win, bg=PALETTE["bg"])
@@ -12279,7 +12282,7 @@ class TelegramAccountsTab(tk.Frame):
                     seen2.add(lnk.lower())
                     uniq.append(lnk)
             out_text.insert(tk.END, "\n".join(uniq))
-            self._link_count_var.set(
+            _link_count_var.set(
                 f"📤 추출 결과 — {len(uniq)}건 (계정 메타에서)")
 
     # ── v1.78: Frozen 계정 해제 ────────────────────────────────
@@ -13446,6 +13449,24 @@ def _app_build_log_tab(self, frame: tk.Frame):
     tab = LogTab(frame, self)
     tab.pack(fill=tk.BOTH, expand=True)
     self._log_tab = tab
+    # v1.78: 엔진에 alert_fn 주입 — 긴급 조치 패널과 TelethonEngine 연동
+    def _engine_alert(phone: str, kind: str, detail: str = ""):
+        """TelethonEngine → LogTab 긴급 패널 콜백"""
+        if kind == "frozen":
+            tab._alert_frozen += 1
+            try:
+                tab._emg_frozen_var.set(f"🚨 FROZEN: {tab._alert_frozen}계정")
+                tab._emergency_panel.configure(bg="#FEE2E2",
+                    highlightbackground="#EF4444")
+            except Exception:
+                pass
+        elif kind == "flood_stopped":
+            tab._alert_flood += 1
+            try:
+                tab._emg_flood_var.set(f"🛑 FloodWait중단: {tab._alert_flood}계정")
+            except Exception:
+                pass
+    _get_tg_engine(alert_fn=_engine_alert)
 
 App._build_log_tab = _app_build_log_tab
 # ============================================================
