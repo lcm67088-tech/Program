@@ -11539,11 +11539,12 @@ class TelethonEngine:
         return _FAIL
 
     # ── ④ 가입된 채팅방 목록 조회 (iter_dialogs) ──────────────────────
-    def get_dialogs(self, acct: dict, limit: int = 100) -> list[dict]:
+    def get_dialogs(self, acct: dict, limit: int = None) -> list[dict]:
         """계정이 가입된 채팅방/그룹/채널 목록 반환.
 
         반환: [{"name", "id", "username", "type", "unread"}, ...]
           type: "user" | "group" | "channel" | "supergroup"
+        limit: None = 전체 조회 (무제한), 숫자 지정 시 상위 N개만
         """
         if not HAS_TELETHON:
             return []
@@ -12832,11 +12833,11 @@ class TelegramAccountsTab(tk.Frame):
             messagebox.showwarning("선택 없음", "계정을 선택하세요.")
             return
         acct = self._accounts[self._sel_idx]
-        self.app._set_status("📋 대화방 목록 조회 중…")
+        self.app._set_status("📋 대화방 목록 전체 조회 중… (채팅방 수에 따라 수초 소요)")
 
         def _fetch():
             eng = _get_tg_engine(lambda m, lv="INFO": None)
-            return eng.get_dialogs(acct, limit=200)
+            return eng.get_dialogs(acct, limit=None)  # 전체 조회
 
         def _done(dialogs):
             # 팝업 창 생성
