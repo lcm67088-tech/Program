@@ -11559,11 +11559,14 @@ class TelethonEngine:
 
     # ── ④ 가입된 채팅방 목록 조회 (iter_dialogs) ──────────────────────
     def get_dialogs(self, acct: dict, limit: int = None) -> list[dict]:
-        """계정이 가입된 채팅방/그룹/채널 목록 반환.
+        """계정이 가입된 채팅방/그룹/채널 목록 반환.  [v1.81: 전체 조회 보장]
 
         반환: [{"name", "id", "username", "type", "unread"}, ...]
           type: "user" | "group" | "channel" | "supergroup"
         limit: None = 전체 조회 (무제한), 숫자 지정 시 상위 N개만
+
+        ※ iter_dialogs는 100개씩 페이지 단위로 API를 호출하므로
+          timeout 없이 전용 이벤트 루프에서 완전히 끝날 때까지 대기.
         """
         if not HAS_TELETHON:
             return []
@@ -11574,9 +11577,11 @@ class TelethonEngine:
 
             result: list[dict] = []
 
-            async def _fetch():
+            async def _fetch_all():
                 if not client.is_connected():
                     await client.connect()
+                from telethon.tl.types import User, Chat, Channel
+                # limit=None → Telethon이 내부적으로 100개씩 페이지 반복 → 전체 수집
                 async for dialog in client.iter_dialogs(limit=limit):
                     ent  = dialog.entity
                     name = getattr(ent, "title", None) or \
@@ -11585,17 +11590,13 @@ class TelethonEngine:
                     uname  = getattr(ent, "username", "") or ""
                     eid    = getattr(ent, "id", None)
                     unread = dialog.unread_count
-
-                    from telethon.tl.types import (
-                        User, Chat, Channel
-                    )
                     if isinstance(ent, User):
                         dtype = "user"
                     elif isinstance(ent, Channel):
-                        dtype = "supergroup" if getattr(ent, "megagroup", False) else "channel"
+                        dtype = "supergroup" if getattr(ent, "megagroup", False) \
+                                else "channel"
                     else:
                         dtype = "group"
-
                     result.append({
                         "name":    name,
                         "id":      eid,
@@ -11603,11 +11604,14 @@ class TelethonEngine:
                         "type":    dtype,
                         "unread":  unread,
                     })
+                return result
 
-            self._run_in_loop(loop, _fetch())
+            # timeout을 넉넉하게 (채팅방 1,000개 기준 ~60초, 5,000개 ~300초)
+            future = asyncio.run_coroutine_threadsafe(_fetch_all(), loop)
+            fetched = future.result(timeout=600)   # 최대 10분 대기
             self._log_fn(
-                f"[TG:{phone}] 📋 대화방 목록 {len(result)}개 조회 완료", "INFO")
-            return result
+                f"[TG:{phone}] 📋 대화방 목록 {len(fetched)}개 전체 조회 완료", "INFO")
+            return fetched
 
         except Exception as _e:
             self._log_fn(f"[TG:{phone}] ⚠️ 대화방 목록 조회 실패: {_e}", "WARN")
@@ -12852,7 +12856,7 @@ class TelegramAccountsTab(tk.Frame):
             messagebox.showwarning("선택 없음", "계정을 선택하세요.")
             return
         acct = self._accounts[self._sel_idx]
-        self.app._set_status("📋 대화방 목록 전체 조회 중… (채팅방 수에 따라 수초 소요)")
+        self.app._set_status("📋 대화방 목록 전체 조회 중… (100개 단위 페이지 순차 수집, 채팅방이 많을수록 시간 소요)")
 
         def _fetch():
             eng = _get_tg_engine(lambda m, lv="INFO": None)
