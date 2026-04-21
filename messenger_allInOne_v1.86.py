@@ -8833,12 +8833,13 @@ class WorkflowExecutor:
                         self._log("모든 계정 FROZEN/FloodStop — 가입 루프 종료", "ERROR")
                         break
                     continue  # 딜레이 없이 다음 링크(다른 계정)로
-                # [CRIT-04 fix] 계정 경계에서 sw_dly 또는 tg_min~max 중 하나만 적용
-                if idx % n_accts == n_accts - 1:
+                # [v1.86 fix] 링크 간격은 항상 tg_min~tg_max 적용
+                # 계정 경계(마지막 계정 → 첫 계정 순환) 시에만 추가로 sw_dly
+                # n_accts=1 이면 매 링크마다 tg_min~tg_max 대기 (이전 코드는
+                # n_accts=1 시 항상 sw_dly=1초만 적용되어 FROZEN 발생)
+                if self._sleep_or_stop(random.uniform(tg_min, tg_max)): break
+                if n_accts > 1 and idx % n_accts == n_accts - 1:
                     if self._sleep_or_stop(sw_dly): break
-                else:
-                    if self._sleep_or_stop(
-                            random.uniform(tg_min, tg_max)): break
 
         elif mode == "split":
             chunk = max(1, (total + n_accts - 1) // n_accts)
